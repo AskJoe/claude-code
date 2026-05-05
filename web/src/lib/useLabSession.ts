@@ -352,7 +352,17 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
       return;
 
     case "agent:turn_aborted":
-      s.setChat((c) => [...c, { kind: "aborted", id: newId() }]);
+      // Same cleanup as turn_end — clear stuck streaming cursors before
+      // appending the abort marker.
+      s.setChat((c) =>
+        c
+          .map((it) =>
+            it.kind === "agent-text" && it.streaming
+              ? { ...it, streaming: false }
+              : it
+          )
+          .concat({ kind: "aborted", id: newId() })
+      );
       s.setStatus("ready");
       return;
 
@@ -442,6 +452,16 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
       return;
 
     case "agent:turn_end":
+      // Clear any lingering streaming flags. The Agent SDK occasionally
+      // ends a turn without emitting a final `agent:text` for every chunked
+      // message — most often on multi-block turns or aborts. Without this
+      // sweep, the .stream-cursor span keeps blinking on completed
+      // messages.
+      s.setChat((c) =>
+        c.map((it) =>
+          it.kind === "agent-text" && it.streaming ? { ...it, streaming: false } : it
+        )
+      );
       s.setChat((c) => [
         ...c,
         {
