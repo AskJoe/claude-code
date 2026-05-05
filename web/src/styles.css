@@ -3832,3 +3832,109 @@ textarea {
   font-size: 11px;
   color: var(--text-2);
 }
+
+/* ── Phase 15 — preset picker + cost split ──────────────────────────────── */
+
+.model-pill.model-pill-advised {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.advisor-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.model-popover-wide {
+  min-width: 280px;
+  max-width: 340px;
+}
+.model-option-preset {
+  align-items: flex-start;
+  padding: 8px 10px;
+}
+.model-option-preset.active {
+  background: var(--accent-tint);
+}
+.model-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+.model-option-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.recommended-badge {
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.model-option-hint {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.4;
+}
+
+/* Executor / advisor cost split mini-line under the meter */
+.cost-split {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--text-3);
+  line-height: 1;
+  margin-top: 1px;
+}
+.cost-split-exec { color: var(--text-2); }
+.cost-split-adv { color: var(--accent); }
+.cost-split-sep { opacity: 0.6; }
+
+/* Settings panel preset rows (mirrors the chat-header popover style) */
+.settings-preset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-preset-row {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  background: var(--bg);
+}
+.settings-preset-row:hover { border-color: var(--accent); }
+.settings-preset-row.active {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+.settings-preset-row input { margin-top: 4px; accent-color: var(--accent); }
+.settings-preset-body { display: flex; flex-direction: column; gap: 4px; flex: 1; }
+.settings-preset-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+.settings-preset-hint { font-size: 12px; color: var(--text-3); line-height: 1.4; }

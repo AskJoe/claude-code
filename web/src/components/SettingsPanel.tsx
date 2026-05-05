@@ -12,6 +12,12 @@ import { useEffect, useRef, useState } from "react";
 import { useTheme, type ThemeChoice } from "../lib/useTheme.ts";
 import { SHORTCUTS, SHORTCUT_GROUPS } from "../lib/shortcuts.ts";
 import { api, type Me } from "../lib/api.ts";
+import {
+  PRESETS,
+  loadPresetId,
+  savePresetId,
+  type PresetId,
+} from "../lib/models.ts";
 
 type Tab =
   | "general"
@@ -239,10 +245,16 @@ function useLocalBool(key: string, def: boolean): [boolean, (v: boolean) => void
 }
 
 function AgentTab() {
-  const [model, setModel] = useLocalRadio<"sonnet-4.6" | "opus-4.7" | "haiku">(
-    "lab.modelPreference",
-    "sonnet-4.6"
-  );
+  const [presetId, setPresetIdState] = useState<PresetId>(() => loadPresetId());
+  const [advisorCap, setAdvisorCap] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem("lab.advisorCap");
+      const n = raw ? Number(raw) : 30;
+      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+    } catch {
+      return 30;
+    }
+  });
   const [showReasoning, setShowReasoning] = useLocalBool(
     "lab.showReasoning",
     false
@@ -254,35 +266,84 @@ function AgentTab() {
     "auto" | "bash-only" | "all"
   >("lab.permissionMode", "auto");
 
+  const updateAdvisorCap = (n: number) => {
+    setAdvisorCap(n);
+    try {
+      localStorage.setItem("lab.advisorCap", String(n));
+    } catch {}
+  };
+
   return (
     <>
       <h2 className="settings-section-title">Agent</h2>
 
       <div className="settings-row">
-        <label>Model</label>
+        <label>Preset</label>
         <div>
-          <div className="settings-radio-group">
-            {(
-              [
-                ["sonnet-4.6", "Sonnet 4.6"],
-                ["opus-4.7", "Opus 4.7"],
-                ["haiku", "Haiku"],
-              ] as Array<["sonnet-4.6" | "opus-4.7" | "haiku", string]>
-            ).map(([id, label]) => (
-              <label key={id} className="settings-radio">
+          <div className="settings-preset-list">
+            {PRESETS.map((p) => (
+              <label
+                key={p.id}
+                className={`settings-preset-row${presetId === p.id ? " active" : ""}`}
+              >
                 <input
                   type="radio"
-                  name="model"
-                  checked={model === id}
-                  onChange={() => setModel(id)}
+                  name="lab-preset"
+                  checked={presetId === p.id}
+                  onChange={() => {
+                    setPresetIdState(p.id);
+                    savePresetId(p.id);
+                  }}
                 />
-                <span>{label}</span>
+                <div className="settings-preset-body">
+                  <div className="settings-preset-label">
+                    {p.label}
+                    {p.recommended && (
+                      <span className="recommended-badge">Recommended</span>
+                    )}
+                    {p.advisor && (
+                      <span className="advisor-tag">+adv</span>
+                    )}
+                  </div>
+                  <div className="settings-preset-hint">{p.hint}</div>
+                </div>
               </label>
             ))}
           </div>
           <div className="settings-help">
-            Per-browser preference. The backend default applies to brand-new
-            sessions until the change is picked up.
+            Click Reset on the chat header after changing the preset to apply
+            it. The advisor strategy pairs a cheap executor with Opus 4.7 for
+            mid-task strategic guidance — see{" "}
+            <a
+              href="https://claude.com/blog/the-advisor-strategy"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Anthropic's writeup
+            </a>
+            .
+          </div>
+        </div>
+      </div>
+
+      <div className="settings-row">
+        <label>Advisor cap</label>
+        <div>
+          <input
+            type="number"
+            min={1}
+            max={500}
+            value={advisorCap}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (Number.isFinite(n) && n > 0) updateAdvisorCap(Math.floor(n));
+            }}
+            style={{ maxWidth: 120 }}
+          />
+          <div className="settings-help">
+            Stop calling the advisor after this many calls per session. The
+            chat shows a warning when reached. Default 30. Has no effect on
+            non-advisor presets.
           </div>
         </div>
       </div>

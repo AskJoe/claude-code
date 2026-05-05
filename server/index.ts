@@ -726,6 +726,21 @@ app.get(
     const projectId = Number(c.req.query("projectId"));
     const wsMode: "code" | "plan" =
       c.req.query("mode") === "plan" ? "plan" : "code";
+    // Per-session executor + advisor preset, picked client-side from
+    // localStorage (`lab.modelPreset`) and forwarded on WS open. Defaults
+    // mirror the lab-wide setting when absent or invalid.
+    const validExecutors = new Set([
+      "haiku-4.5",
+      "sonnet-4.6",
+      "opus-4.6",
+      "opus-4.7",
+    ]);
+    const executorRaw = c.req.query("executor") ?? "";
+    const wsExecutor = validExecutors.has(executorRaw)
+      ? (executorRaw as "haiku-4.5" | "sonnet-4.6" | "opus-4.6" | "opus-4.7")
+      : undefined;
+    const wsAdvisor =
+      c.req.query("advisor") === "opus-4.7" ? "opus-4.7" : null;
     let session: Session | null = null;
     let agent: ReturnType<typeof startAgent> | null = null;
     let project: PublicProject | null = null;
@@ -818,7 +833,12 @@ app.get(
       });
       liveSessions.set(project.id, session);
       touchProject(project.id);
-      agent = startAgent(session, emit, { userId: user.id, mode: wsMode });
+      agent = startAgent(session, emit, {
+        userId: user.id,
+        mode: wsMode,
+        executor: wsExecutor,
+        advisor: wsAdvisor,
+      });
 
       // Reconcile stale dist on session open: if src is newer than dist (or
       // there's no dist), kick off a build immediately so the preview comes
@@ -971,6 +991,18 @@ app.get(
             log.info("model preference received", {
               projectId: project?.id,
               model: cmd.model,
+            });
+            return;
+          }
+          case "session:set_preset": {
+            // Same forward-compat pattern as set_model: the SDK can't swap
+            // executor or toggle the advisor tool mid-query(). The client
+            // already persisted to localStorage and surfaced the system
+            // message; this server-side ack is for logs/observability.
+            log.info("preset preference received", {
+              projectId: project?.id,
+              executor: cmd.executor,
+              advisor: cmd.advisor,
             });
             return;
           }

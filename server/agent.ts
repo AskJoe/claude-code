@@ -14,7 +14,69 @@ import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { getSettings } from "./settings.ts";
 import { getUserById } from "./db.ts";
 import type { Session } from "./sessions.ts";
-import type { ServerEvent } from "../shared/events.ts";
+import type {
+  AdvisorModel,
+  ExecutorModel,
+  ServerEvent,
+} from "../shared/events.ts";
+
+// Advisor strategy — see https://claude.com/blog/the-advisor-strategy
+// Beta header centralized here; bump when the API moves out of beta.
+const ADVISOR_BETA_HEADER = "advisor-tool-2026-03-01";
+
+// Map our preset's executor key to the SDK / Anthropic model id.
+function resolveExecutorModelId(e: ExecutorModel): string {
+  switch (e) {
+    case "haiku-4.5":
+      return "claude-haiku-4-5-20251001";
+    case "sonnet-4.6":
+      return "claude-sonnet-4-6";
+    case "opus-4.6":
+      return "claude-opus-4-6";
+    case "opus-4.7":
+      return "claude-opus-4-7";
+  }
+}
+
+function resolveAdvisorModelId(a: AdvisorModel): string | null {
+  if (a === "opus-4.7") return "claude-opus-4-7";
+  return null;
+}
+
+// Per-million input/output USD rates. Used to estimate the executor/advisor
+// split when the SDK doesn't surface usage.iterations[].
+const PRICING_PER_MTOK: Record<string, { input: number; output: number }> = {
+  "claude-haiku-4-5-20251001": { input: 1, output: 5 },
+  "claude-sonnet-4-6": { input: 3, output: 15 },
+  "claude-opus-4-6": { input: 15, output: 75 },
+  "claude-opus-4-7": { input: 15, output: 75 },
+};
+
+function estimateCost(modelId: string, inputTokens: number, outputTokens: number): number {
+  const p = PRICING_PER_MTOK[modelId];
+  if (!p) return 0;
+  return (
+    (inputTokens / 1_000_000) * p.input +
+    (outputTokens / 1_000_000) * p.output
+  );
+}
+
+const ADVISOR_TIMING_BLOCK = `You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters — when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.
+
+Call advisor BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption. If the task requires orientation first (finding files, fetching a source, seeing what's there), do that, then call advisor. Orientation is not substantive work. Writing, editing, and declaring an answer are.
+
+Also call advisor:
+- When you believe the task is complete. BEFORE this call, make your deliverable durable: write the file, save the result, commit the change. The advisor call takes time; if the session ends during it, a durable result persists and an unwritten one doesn't.
+- When stuck — errors recurring, approach not converging, results that don't fit.
+- When considering a change of approach.
+
+On tasks longer than a few steps, call advisor at least once before committing to an approach and once before declaring done. On short reactive tasks where the next action is dictated by tool output you just read, you don't need to keep calling — the advisor adds most of its value on the first call, before the approach crystallizes.`;
+
+const ADVISOR_TREATMENT_BLOCK = `Give the advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim (the file says X, the paper states Y), adapt. A passing self-test is not evidence the advice is wrong — it's evidence your test doesn't check what the advice is checking.
+
+If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call — "I found X, you suggest Y, which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconcile call is cheaper than committing to the wrong branch.`;
+
+const ADVISOR_CONCISENESS_BLOCK = `The advisor should respond in under 100 words and use enumerated steps, not explanations.`;
 
 const SYSTEM_PROMPT = `You are the agent powering Cloudwise Lab — a web playground where Cloudwise Academy students chat with a Claude-Code-style assistant.
 
@@ -106,6 +168,14 @@ export type StartAgentOptions = {
    * actually do it.
    */
   mode?: "code" | "plan";
+  /** Executor model. Defaults to lab-wide `default_model` setting. */
+  executor?: ExecutorModel;
+  /** Optional advisor (Opus 4.7) — null means no advisor.
+   * When set, the SDK is told to register the advisor tool via the
+   * `advisor-tool-2026-03-01` beta header + `advisorModel` setting. The
+   * recommended timing/treatment/conciseness blocks are prepended to the
+   * system prompt to guide when the executor invokes the tool. */
+  advisor?: AdvisorModel;
 };
 
 export function startAgent(
@@ -117,6 +187,9 @@ export function startAgent(
   let busy = false;
   let exhausted = false;
   let cumulativeCost = 0;
+  let cumulativeExecutorCost = 0;
+  let cumulativeAdvisorCost = 0;
+  let advisorCallCount = 0;
   let abortRequested = false;
   // One-shot prior-conversation context, set by the WS handler on
   // session open from `listMessages(...)`. Consumed on the next
@@ -125,10 +198,10 @@ export function startAgent(
   let pendingHistoryPreamble: string | null = null;
 
   // Budget priority: per-user override > lab-wide default.
-  // Model: lab-wide default (no per-user override yet).
+  // Model: per-session preset (executor) > lab-wide default.
   const labSettings = getSettings();
   let budget = labSettings.defaultBudgetUsd;
-  // Compose the system prompt: user's optional prefix → our baked prompt.
+  // Compose the system prompt: optional advisor blocks → user's prefix → baked.
   let composedSystemPrompt = SYSTEM_PROMPT;
   if (startOpts.userId) {
     const userRow = getUserById(startOpts.userId);
@@ -141,12 +214,30 @@ export function startAgent(
     }
   }
 
+  // Executor model resolution. If the caller didn't supply one, fall back to
+  // the lab-wide default (typically claude-sonnet-4-6 from settings).
+  const executorChoice: ExecutorModel = startOpts.executor ?? "sonnet-4.6";
+  const executorModelId = resolveExecutorModelId(executorChoice);
+  const advisorModelId = resolveAdvisorModelId(startOpts.advisor ?? null);
+  const advisorActive = advisorModelId !== null;
+
+  // Prepend the recommended advisor blocks when advisor is enabled. Order:
+  // conciseness → timing → treatment → user prefix (already in composedSystemPrompt) → baked.
+  if (advisorActive) {
+    composedSystemPrompt =
+      `${ADVISOR_CONCISENESS_BLOCK}\n\n` +
+      `${ADVISOR_TIMING_BLOCK}\n\n` +
+      `${ADVISOR_TREATMENT_BLOCK}\n\n---\n\n` +
+      composedSystemPrompt;
+  }
+
   const permissionMode: Options["permissionMode"] =
     startOpts.mode === "plan" ? "plan" : "bypassPermissions";
 
   const options: Options = {
     cwd: session.rootDir,
-    model: labSettings.defaultModel,
+    // Per-session executor pick. Falls back to lab-wide default if unmapped.
+    model: executorModelId || labSettings.defaultModel,
     // Inherit Claude Code's full default charter (planning, no-preamble output,
     // tool-use conventions, code-style heuristics) and APPEND our Astro-specific
     // guidance on top. Replacing the preset entirely was the single largest
@@ -166,6 +257,21 @@ export function startAgent(
     thinking: { type: "adaptive" },
   };
 
+  // When advisor is on, pass the beta header + advisorModel via the SDK's
+  // CLI passthrough (extraArgs). The agent SDK 0.2.126 doesn't expose these
+  // on Options directly, but the underlying CLI binary accepts:
+  //   --betas advisor-tool-2026-03-01
+  //   --settings <json with advisorModel>
+  // Once the SDK adds first-class support, swap to that.
+  if (advisorActive && advisorModelId) {
+    const inlineSettings = JSON.stringify({ advisorModel: advisorModelId });
+    options.extraArgs = {
+      ...(options.extraArgs ?? {}),
+      betas: ADVISOR_BETA_HEADER,
+      settings: inlineSettings,
+    };
+  }
+
   const stream = query({ prompt: inbox.iterable, options });
 
   // Pump SDK messages onto the WebSocket as they arrive.
@@ -175,6 +281,61 @@ export function startAgent(
         if (msg.type === "result") {
           const turnCost = msg.total_cost_usd ?? 0;
           cumulativeCost += turnCost;
+
+          // When advisor is active, split the turn's cost into executor and
+          // advisor portions. Prefer iterations[] if the SDK surfaces it;
+          // otherwise estimate from token rates. The split is cosmetic — the
+          // top-level cumulativeCost remains authoritative for budget enforcement.
+          let turnExecutorCost = turnCost;
+          let turnAdvisorCost = 0;
+          let turnAdvisorTokens = 0;
+          let turnAdvisorCalls = 0;
+          if (advisorActive && advisorModelId) {
+            // The Anthropic API reports `usage.iterations[]` with one entry
+            // per inference (executor messages + advisor sub-inferences).
+            // The Agent SDK passes the API response usage through; it MAY
+            // include iterations on advisor-tool runs.
+            const iters: Array<{
+              type?: string;
+              model?: string;
+              input_tokens?: number;
+              output_tokens?: number;
+            }> | undefined = (msg.usage as any)?.iterations;
+            if (Array.isArray(iters) && iters.length > 0) {
+              for (const it of iters) {
+                if (it.type === "advisor_message") {
+                  turnAdvisorCalls += 1;
+                  const inT = it.input_tokens ?? 0;
+                  const outT = it.output_tokens ?? 0;
+                  turnAdvisorTokens += inT + outT;
+                  turnAdvisorCost += estimateCost(advisorModelId, inT, outT);
+                }
+              }
+              turnExecutorCost = Math.max(0, turnCost - turnAdvisorCost);
+            } else {
+              // Fallback: no iterations exposed. Estimate executor cost from
+              // the top-level token counts and treat the remainder as advisor.
+              const executorEstimate = estimateCost(
+                executorModelId,
+                msg.usage?.input_tokens ?? 0,
+                msg.usage?.output_tokens ?? 0
+              );
+              turnExecutorCost = Math.min(turnCost, executorEstimate);
+              turnAdvisorCost = Math.max(0, turnCost - turnExecutorCost);
+            }
+          }
+          cumulativeExecutorCost += turnExecutorCost;
+          cumulativeAdvisorCost += turnAdvisorCost;
+          if (turnAdvisorCalls > 0) {
+            advisorCallCount += turnAdvisorCalls;
+            emit({
+              type: "agent:advisor_used",
+              advisorTokens: turnAdvisorTokens,
+              advisorCostUsd: turnAdvisorCost,
+              callCountThisSession: advisorCallCount,
+            });
+          }
+
           emit({
             type: "agent:turn_end",
             cost: turnCost,
@@ -183,6 +344,14 @@ export function startAgent(
             outputTokens: msg.usage?.output_tokens ?? 0,
             subtype: msg.subtype ?? "unknown",
             cumulativeCostUsd: cumulativeCost,
+            executorCostUsd: advisorActive ? turnExecutorCost : undefined,
+            advisorCostUsd: advisorActive ? turnAdvisorCost : undefined,
+            cumulativeExecutorCostUsd: advisorActive
+              ? cumulativeExecutorCost
+              : undefined,
+            cumulativeAdvisorCostUsd: advisorActive
+              ? cumulativeAdvisorCost
+              : undefined,
           });
           busy = false;
           if (msg.subtype === "error_max_budget_usd") {

@@ -509,6 +509,9 @@ function Lab({
             status={lab.status}
             chat={lab.chat}
             cumulativeCostUsd={lab.cumulativeCostUsd}
+            cumulativeExecutorCostUsd={lab.cumulativeExecutorCostUsd}
+            cumulativeAdvisorCostUsd={lab.cumulativeAdvisorCostUsd}
+            advisorCallsThisSession={lab.advisorCallsThisSession}
             budgetUsd={lab.budgetUsd}
             projectId={projectId}
             sessionId={lab.sessionId}
@@ -516,7 +519,7 @@ function Lab({
             onSend={lab.send}
             onAbort={lab.abort}
             onReset={lab.reset}
-            onSetModel={lab.setModelPreference}
+            onSetPreset={lab.setModelPreset}
             onSetRightView={setRightView}
             onSetTheme={theme.setChoice}
             onShowShortcuts={onShowShortcuts}

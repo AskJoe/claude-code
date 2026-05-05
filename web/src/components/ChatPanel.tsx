@@ -13,26 +13,23 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { renderMarkdown } from "../lib/markdown.tsx";
 import { exportSessionUrl } from "../lib/api.ts";
 import type { ChatItem, LabState } from "../lib/useLabSession.ts";
-import type { ModelKey } from "../../../shared/events.ts";
+import type {
+  AdvisorModel,
+  ExecutorModel,
+} from "../../../shared/events.ts";
+import {
+  PRESETS,
+  loadPresetId,
+  savePresetId,
+  getPreset,
+  type Preset,
+  type PresetId,
+} from "../lib/models.ts";
 import { ToolCallBlock } from "./ToolCallBlock.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { COMMANDS, type Command, type CommandContext } from "../lib/commands.ts";
 
 const VIRTUAL_THRESHOLD = 50;
-const MODEL_LABELS: Record<ModelKey, string> = {
-  "sonnet-4.6": "Sonnet 4.6",
-  "opus-4.7": "Opus 4.7",
-  haiku: "Haiku",
-};
-const MODEL_KEYS: ModelKey[] = ["sonnet-4.6", "opus-4.7", "haiku"];
-
-function loadModelPreference(): ModelKey {
-  try {
-    const v = localStorage.getItem("lab.modelPreference");
-    if (v === "sonnet-4.6" || v === "opus-4.7" || v === "haiku") return v;
-  } catch {}
-  return "sonnet-4.6";
-}
 
 type QueuedUpload = {
   id: string;
@@ -52,6 +49,13 @@ type Props = {
   status: LabState["status"];
   chat: ChatItem[];
   cumulativeCostUsd: number;
+  /** Cost split when an Opus advisor was active. Both default to the total
+   *  when omitted (advisor never invoked). */
+  cumulativeExecutorCostUsd?: number;
+  cumulativeAdvisorCostUsd?: number;
+  /** Total advisor sub-inferences fired this session — drives the
+   *  per-conversation cap surface. */
+  advisorCallsThisSession?: number;
   budgetUsd: number;
   projectId: number;
   sessionId: string | null;
@@ -61,9 +65,10 @@ type Props = {
   onSend: (text: string) => void;
   onAbort: () => void;
   onReset: () => void;
-  /** Pushes the user's chosen model to the server (no-op for now;
-   *  applies on next session). When omitted, the model pill is hidden. */
-  onSetModel?: (m: ModelKey) => void;
+  /** Pushes the user's chosen executor+advisor pair to the server (no-op
+   *  for the running agent; applies on next session). When omitted the
+   *  preset pill is hidden. */
+  onSetPreset?: (executor: ExecutorModel, advisor: AdvisorModel) => void;
   /** Optional handlers wired by App.tsx for the command palette. */
   onSetRightView?: (v: "preview" | "code") => void;
   onSetTheme?: (t: "light" | "dark" | "system") => void;
@@ -93,6 +98,9 @@ export function ChatPanel({
   status,
   chat,
   cumulativeCostUsd,
+  cumulativeExecutorCostUsd,
+  cumulativeAdvisorCostUsd,
+  advisorCallsThisSession,
   budgetUsd,
   projectId,
   sessionId,
@@ -100,7 +108,7 @@ export function ChatPanel({
   onSend,
   onAbort,
   onReset,
-  onSetModel,
+  onSetPreset,
   onSetRightView,
   onSetTheme,
   onShowShortcuts,
@@ -114,14 +122,14 @@ export function ChatPanel({
   const [uploads, setUploads] = useState<QueuedUpload[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [modelChoice, setModelChoice] = useState<ModelKey>(() => loadModelPreference());
-  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+  const [presetId, setPresetId] = useState<PresetId>(() => loadPresetId());
+  const [presetPopoverOpen, setPresetPopoverOpen] = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const [rateUsage, setRateUsage] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const modelPillRef = useRef<HTMLDivElement>(null);
+  const presetPillRef = useRef<HTMLDivElement>(null);
   // Counts nested drag-enter/leave so child elements don't flicker the overlay.
   const dragCounter = useRef(0);
   // Sliding-window timestamps of recent user sends (last 60s).
@@ -145,16 +153,16 @@ export function ChatPanel({
     return () => window.clearInterval(id);
   }, []);
 
-  // Click-outside closes the model popover.
+  // Click-outside closes the preset popover.
   useEffect(() => {
-    if (!modelPopoverOpen) return;
+    if (!presetPopoverOpen) return;
     const onDown = (e: MouseEvent) => {
-      const el = modelPillRef.current;
-      if (el && !el.contains(e.target as Node)) setModelPopoverOpen(false);
+      const el = presetPillRef.current;
+      if (el && !el.contains(e.target as Node)) setPresetPopoverOpen(false);
     };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
-  }, [modelPopoverOpen]);
+  }, [presetPopoverOpen]);
 
   // Virtualize once the transcript gets long. Below 50 items the plain map is
   // faster (no measurement overhead) and avoids any visual jitter.
@@ -506,23 +514,27 @@ export function ChatPanel({
               {rateUsage}/{rateCap} msgs/min
             </span>
           )}
-          <CostMeter spent={cumulativeCostUsd} budget={budgetUsd} />
-          {onSetModel && (
-            <ModelPill
-              ref={modelPillRef}
-              choice={modelChoice}
-              open={modelPopoverOpen}
-              onToggle={() => setModelPopoverOpen((o) => !o)}
-              onPick={(m) => {
-                setModelChoice(m);
-                try {
-                  localStorage.setItem("lab.modelPreference", m);
-                } catch {}
-                onSetModel(m);
-                setModelPopoverOpen(false);
+          <CostMeter
+            spent={cumulativeCostUsd}
+            executor={cumulativeExecutorCostUsd}
+            advisor={cumulativeAdvisorCostUsd}
+            budget={budgetUsd}
+            advisorActive={getPreset(presetId).advisor !== null}
+          />
+          {onSetPreset && (
+            <PresetPill
+              ref={presetPillRef}
+              choice={presetId}
+              open={presetPopoverOpen}
+              onToggle={() => setPresetPopoverOpen((o) => !o)}
+              onPick={(p) => {
+                setPresetId(p.id);
+                savePresetId(p.id);
+                onSetPreset(p.executor, p.advisor);
+                setPresetPopoverOpen(false);
                 if (onSystemMessage) {
                   onSystemMessage(
-                    `Model preference set to ${MODEL_LABELS[m]}. Applies on next session — click Reset to apply now.`
+                    `Preset set to ${p.label}. Applies on next session — click Reset to apply now.`
                   );
                 }
               }}
@@ -559,7 +571,8 @@ export function ChatPanel({
           </span>
           <span className="budget-banner-text">
             You've used {Math.round(budgetPct * 100)}% of today's budget.
-            Consider switching to Haiku or pausing.
+            Consider switching to a Frugal preset, disabling the advisor, or
+            pausing.
           </span>
           <button
             type="button"
@@ -837,14 +850,33 @@ function ChatRow({ item }: { item: ChatItem }) {
   }
 }
 
-function CostMeter({ spent, budget }: { spent: number; budget: number }) {
+function CostMeter({
+  spent,
+  executor,
+  advisor,
+  budget,
+  advisorActive,
+}: {
+  spent: number;
+  executor?: number;
+  advisor?: number;
+  budget: number;
+  advisorActive: boolean;
+}) {
   const pct = Math.min(100, Math.round((spent / Math.max(budget, 0.01)) * 100));
   const tone = pct >= 90 ? "danger" : pct >= 60 ? "warn" : "ok";
-  const tooltip =
-    `Session cost: $${spent.toFixed(4)} of $${budget.toFixed(2)} budget. ` +
-    `Cumulative spend across all turns this session, divided by the project budget.`;
+  const exec = typeof executor === "number" ? executor : spent;
+  const adv = typeof advisor === "number" ? advisor : 0;
+  const tooltipParts = [
+    `Session cost: $${spent.toFixed(4)} of $${budget.toFixed(2)} budget.`,
+  ];
+  if (advisorActive || adv > 0) {
+    tooltipParts.push(
+      `Executor: $${exec.toFixed(4)}  ·  Advisor (Opus 4.7): $${adv.toFixed(4)}`
+    );
+  }
   return (
-    <div className="cost-meter-wrap" title={tooltip}>
+    <div className="cost-meter-wrap" title={tooltipParts.join("\n")}>
       <span className={`cost-meter cost-meter-${tone}`}>
         ${spent.toFixed(2)} / ${budget.toFixed(2)}
       </span>
@@ -854,45 +886,69 @@ function CostMeter({ spent, budget }: { spent: number; budget: number }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      {(advisorActive || adv > 0) && spent > 0 && (
+        <div className="cost-split" aria-hidden>
+          <span className="cost-split-exec">
+            ex ${exec.toFixed(2)}
+          </span>
+          <span className="cost-split-sep">·</span>
+          <span className="cost-split-adv">
+            adv ${adv.toFixed(2)}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
 
-const ModelPill = forwardRef<
+const PresetPill = forwardRef<
   HTMLDivElement,
   {
-    choice: ModelKey;
+    choice: PresetId;
     open: boolean;
     onToggle: () => void;
-    onPick: (m: ModelKey) => void;
+    onPick: (p: Preset) => void;
   }
->(function ModelPill({ choice, open, onToggle, onPick }, ref) {
+>(function PresetPill({ choice, open, onToggle, onPick }, ref) {
+  const current = getPreset(choice);
   return (
     <div className="model-pill-wrap" ref={ref}>
       <button
         type="button"
-        className="model-pill"
+        className={`model-pill${current.advisor ? " model-pill-advised" : ""}`}
         onClick={onToggle}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Change model preference (applies on next session)"
+        title="Change executor + advisor preset (applies on next session)"
       >
-        <span>{MODEL_LABELS[choice]}</span>
+        <span>{current.label}</span>
+        {current.advisor && <span className="advisor-tag" aria-hidden>+adv</span>}
         <span className="caret" aria-hidden>
           ▾
         </span>
       </button>
       {open && (
-        <div className="model-popover" role="listbox">
-          {MODEL_KEYS.map((m) => (
-            <label key={m} className="model-option">
+        <div className="model-popover model-popover-wide" role="listbox">
+          {PRESETS.map((p) => (
+            <label
+              key={p.id}
+              className={`model-option model-option-preset${p.id === choice ? " active" : ""}`}
+            >
               <input
                 type="radio"
-                name="model-choice"
-                checked={m === choice}
-                onChange={() => onPick(m)}
+                name="preset-choice"
+                checked={p.id === choice}
+                onChange={() => onPick(p)}
               />
-              <span>{MODEL_LABELS[m]}</span>
+              <span className="model-option-body">
+                <span className="model-option-label">
+                  {p.label}
+                  {p.recommended && (
+                    <span className="recommended-badge">Recommended</span>
+                  )}
+                </span>
+                <span className="model-option-hint">{p.hint}</span>
+              </span>
             </label>
           ))}
         </div>

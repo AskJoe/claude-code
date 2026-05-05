@@ -5,7 +5,9 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
+  AdvisorModel,
   ClientCommand,
+  ExecutorModel,
   FileNode,
   ModelKey,
   ServerEvent,
@@ -86,6 +88,13 @@ export type LabState = {
   /** Streaming stdout/stderr from the auto-builder, capped at 200 lines. */
   buildLog: LabBuildLog;
   cumulativeCostUsd: number;
+  /** Cost split when an Opus advisor was active during the session.
+   * `advisor` is 0 on sessions that never invoked the advisor tool. */
+  cumulativeExecutorCostUsd: number;
+  cumulativeAdvisorCostUsd: number;
+  /** Total advisor sub-inferences fired this session. Drives the
+   * per-conversation cap surfacing. */
+  advisorCallsThisSession: number;
   budgetUsd: number;
   rateLimit: { perMinute: number };
   send: (text: string) => void;
@@ -95,10 +104,25 @@ export type LabState = {
    * agent (already running) keeps its initial model; the new one applies on
    * the next session — i.e. after a Reset. */
   setModelPreference: (m: ModelKey) => void;
+  /** Persist the executor + advisor pair and notify the server. Same
+   * "applies on next session" rule as setModelPreference. */
+  setModelPreset: (executor: ExecutorModel, advisor: AdvisorModel) => void;
 };
 
 let counter = 0;
 const newId = () => `${Date.now()}-${++counter}`;
+
+/** User-configurable cap on advisor calls per session. Surfaced from the
+ * Settings panel as `lab.advisorCap`. Default 30. */
+function readAdvisorCap(): number {
+  try {
+    const raw = localStorage.getItem("lab.advisorCap");
+    const n = raw ? Number(raw) : 30;
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
+  } catch {
+    return 30;
+  }
+}
 
 export function useLabSession(
   projectId: number | null,
@@ -118,6 +142,9 @@ export function useLabSession(
   });
   const [buildLog, setBuildLog] = useState<LabBuildLog>({ lines: [] });
   const [cumulativeCostUsd, setCumulativeCostUsd] = useState(0);
+  const [cumulativeExecutorCostUsd, setCumulativeExecutorCostUsd] = useState(0);
+  const [cumulativeAdvisorCostUsd, setCumulativeAdvisorCostUsd] = useState(0);
+  const [advisorCallsThisSession, setAdvisorCallsThisSession] = useState(0);
   const [budgetUsd, setBudgetUsd] = useState(1.0);
   const [rateLimit, setRateLimit] = useState<{ perMinute: number }>({ perMinute: 20 });
   const wsRef = useRef<WebSocket | null>(null);
@@ -136,12 +163,34 @@ export function useLabSession(
     setChat([]);
     setFiles([]);
     setCumulativeCostUsd(0);
+    setCumulativeExecutorCostUsd(0);
+    setCumulativeAdvisorCostUsd(0);
+    setAdvisorCallsThisSession(0);
     setBuildLog({ lines: [] });
     filesEventCountRef.current = 0;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const params = new URLSearchParams({ projectId: String(projectId) });
     if (mode === "plan") params.set("mode", "plan");
+    // Forward the user's executor + advisor preset so the agent starts with
+    // the correct model and (if applicable) the advisor tool wired in.
+    try {
+      const presetId = localStorage.getItem("lab.modelPreset");
+      if (presetId) {
+        const presetMap: Record<string, { executor: string; advisor?: string }> = {
+          frugal: { executor: "haiku-4.5" },
+          "frugal-advisor": { executor: "haiku-4.5", advisor: "opus-4.7" },
+          default: { executor: "sonnet-4.6" },
+          "default-advisor": { executor: "sonnet-4.6", advisor: "opus-4.7" },
+          maximum: { executor: "opus-4.7" },
+        };
+        const p = presetMap[presetId];
+        if (p) {
+          params.set("executor", p.executor);
+          if (p.advisor) params.set("advisor", p.advisor);
+        }
+      }
+    } catch {}
     const wsUrl = `${proto}://${location.host}/ws?${params.toString()}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -169,6 +218,9 @@ export function useLabSession(
         setBuild,
         setBuildLog,
         setCumulativeCostUsd,
+        setCumulativeExecutorCostUsd,
+        setCumulativeAdvisorCostUsd,
+        setAdvisorCallsThisSession,
         setBudgetUsd,
         setRateLimit,
         filesEventCountRef,
@@ -205,12 +257,22 @@ export function useLabSession(
     setChat([]);
     setFiles([]);
     setCumulativeCostUsd(0);
+    setCumulativeExecutorCostUsd(0);
+    setCumulativeAdvisorCostUsd(0);
+    setAdvisorCallsThisSession(0);
     sendCommand({ type: "session:reset" });
   }, [sendCommand]);
 
   const setModelPreference = useCallback(
     (m: ModelKey) => {
       sendCommand({ type: "session:set_model", model: m });
+    },
+    [sendCommand]
+  );
+
+  const setModelPreset = useCallback(
+    (executor: ExecutorModel, advisor: AdvisorModel) => {
+      sendCommand({ type: "session:set_preset", executor, advisor });
     },
     [sendCommand]
   );
@@ -225,12 +287,16 @@ export function useLabSession(
     build,
     buildLog,
     cumulativeCostUsd,
+    cumulativeExecutorCostUsd,
+    cumulativeAdvisorCostUsd,
+    advisorCallsThisSession,
     budgetUsd,
     rateLimit,
     send,
     abort,
     reset,
     setModelPreference,
+    setModelPreset,
   };
 }
 
@@ -244,6 +310,9 @@ type Setters = {
   setBuild: (v: LabBuildState) => void;
   setBuildLog: (fn: (prev: LabBuildLog) => LabBuildLog) => void;
   setCumulativeCostUsd: (v: number | ((prev: number) => number)) => void;
+  setCumulativeExecutorCostUsd: (v: number | ((prev: number) => number)) => void;
+  setCumulativeAdvisorCostUsd: (v: number | ((prev: number) => number)) => void;
+  setAdvisorCallsThisSession: (v: number | ((prev: number) => number)) => void;
   setBudgetUsd: (v: number) => void;
   setRateLimit: (v: { perMinute: number }) => void;
   filesEventCountRef: { current: number };
@@ -387,8 +456,38 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
         },
       ]);
       s.setCumulativeCostUsd(event.cumulativeCostUsd);
+      if (typeof event.cumulativeExecutorCostUsd === "number") {
+        s.setCumulativeExecutorCostUsd(event.cumulativeExecutorCostUsd);
+      }
+      if (typeof event.cumulativeAdvisorCostUsd === "number") {
+        s.setCumulativeAdvisorCostUsd(event.cumulativeAdvisorCostUsd);
+      }
       s.setStatus("ready");
       return;
+
+    case "agent:advisor_used": {
+      s.setAdvisorCallsThisSession(event.callCountThisSession);
+      // Cumulative advisor cost is also surfaced on turn_end; mirror it here
+      // so the meter updates intra-turn if the server fires this event eagerly.
+      s.setCumulativeAdvisorCostUsd((prev) => prev + event.advisorCostUsd);
+      // Client-side conversation cap. When the user-configurable threshold
+      // is reached, drop a system message hinting at the cost. The advisor
+      // tool itself stays registered (the SDK doesn't expose dynamic tool
+      // removal), but the executor model is unlikely to keep calling once
+      // the user is told to switch presets.
+      const cap = readAdvisorCap();
+      if (event.callCountThisSession === cap) {
+        s.setChat((c) => [
+          ...c,
+          {
+            kind: "system",
+            id: newId(),
+            text: `Advisor used ${cap} times this session — that's your configured cap. To stop using the advisor, switch to a non-advisor preset (Frugal / Default / Maximum) and click Reset.`,
+          },
+        ]);
+      }
+      return;
+    }
 
     case "agent:error":
       s.setChat((c) => [
