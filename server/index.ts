@@ -24,8 +24,8 @@ import "./env.ts";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
-import { stat, readFile } from "node:fs/promises";
-import { join as pjoin } from "node:path";
+import { stat, readFile, writeFile, mkdir } from "node:fs/promises";
+import { join as pjoin, dirname as pdirname } from "node:path";
 
 import { startAgent } from "./agent.ts";
 import { getSettings } from "./settings.ts";
@@ -79,6 +79,8 @@ import {
   publishPromote,
 } from "./publish-promote.ts";
 import { resolveSessionPath } from "./sessions.ts";
+import { mountUploads } from "./uploads.ts";
+import { mountExport } from "./export.ts";
 import type {
   ClientCommand,
   FileNode,
@@ -407,6 +409,104 @@ app.post("/api/projects/:id/github/connect-repo", authMiddleware, async (c) => {
   }
 });
 
+// File uploads (POST /api/projects/:id/upload)
+mountUploads(app);
+
+// Transcript export (GET /api/projects/:id/sessions/:sid/export)
+mountExport(app);
+
+// Auto-builder restart — kill and respawn this project's chokidar/build
+// pipeline. The watcher and builder are owned by the live WebSocket session,
+// so we look up the active builder for this project and dispose+recreate
+// it. Safe to call when no session is open; returns ok:false in that case.
+app.post("/api/projects/:id/builder/restart", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+
+  const existing = liveBuilders.get(id);
+  if (!existing) {
+    return c.json({ ok: false, reason: "no live session" }, 200);
+  }
+
+  // Tear down the old builder and start a fresh one. The active WS
+  // connection still owns its own variable reference; we replace ours in
+  // liveBuilders so future preview-pane reconciliation reads the new one.
+  // The active WS's `autoBuilder` ref will keep pointing at the disposed
+  // instance — that's harmless: dispose() guards against further work and
+  // the next session open replaces it.
+  existing.dispose();
+
+  const fresh = startAutoBuilder({
+    projectId: id,
+    projectDir: projectDir(id),
+    onStateChange: () => {
+      // No WS broadcast from the manual restart path — the next file change
+      // will surface the new state through the existing session's pipeline.
+    },
+  });
+  liveBuilders.set(id, fresh);
+  fresh.triggerNow();
+  log.info("auto-builder restarted", { projectId: id, userId: user.id });
+  return c.json({ ok: true });
+});
+
+// PUT /api/projects/:id/files — write a single text file inside the session
+// directory. Used by the inline Monaco editor on ⌘S. Path traversal is
+// blocked by reusing `resolveSessionPath`'s safety check via a temporary
+// session shim — we don't open a full chokidar session here; the live
+// session's watcher will pick the change up via fs events.
+app.put("/api/projects/:id/files", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json().catch(() => ({} as any));
+  const path = typeof body?.path === "string" ? body.path : null;
+  const content = typeof body?.content === "string" ? body.content : null;
+  if (!path) return c.json({ error: "path required" }, 400);
+  if (content === null) return c.json({ error: "content required" }, 400);
+
+  // Reuse the same path-safety check used by the live session so we can't
+  // be tricked into writing outside the project dir. We construct a minimal
+  // Session-shaped object — only `rootDir` is needed by `resolveSessionPath`.
+  const root = projectDir(id);
+  const shim = { rootDir: root } as unknown as Session;
+  let abs: string;
+  try {
+    abs = await resolveSessionPath(shim, path);
+  } catch (err: any) {
+    return c.json({ error: err?.message ?? "bad path" }, 400);
+  }
+
+  // Reject obvious binary keys / writing into unsafe locations.
+  if (/(^|\/)(node_modules|dist|\.git|\.astro)(\/|$)/.test(path)) {
+    return c.json({ error: "cannot write inside build/vendor dirs" }, 400);
+  }
+  // Cap payload — Monaco shouldn't be saving giant files, but be safe.
+  if (content.length > 2 * 1024 * 1024) {
+    return c.json({ error: "file too large (>2MB)" }, 400);
+  }
+
+  try {
+    await mkdir(pdirname(abs), { recursive: true });
+    await writeFile(abs, content, "utf-8");
+    const s = await stat(abs);
+    return c.json({ ok: true, mtime: s.mtimeMs });
+  } catch (err: any) {
+    log.error("file write failed", {
+      projectId: id,
+      path,
+      err: err?.message ?? String(err),
+    });
+    return c.json({ error: err?.message ?? "write failed" }, 500);
+  }
+});
+
 app.delete("/api/projects/:id", authMiddleware, async (c) => {
   const user = c.get("user");
   const id = Number(c.req.param("id"));
@@ -686,6 +786,14 @@ app.get(
             lastError: s.lastError,
           });
         },
+        onLog: (line) => {
+          emitRaw({
+            type: "build:log",
+            stream: line.stream,
+            chunk: line.chunk,
+            ts: line.ts,
+          });
+        },
       });
       liveBuilders.set(project.id, autoBuilder);
 
@@ -720,6 +828,19 @@ app.get(
         budgetUsd: agent.budgetUsd(),
         rateLimit: { perMinute: sessionRateLimit },
       });
+
+      // Replay buffered build log lines so a reconnected client sees the tail
+      // of the most recent build without a fresh rebuild.
+      if (autoBuilder) {
+        for (const line of autoBuilder.logBuffer()) {
+          emitRaw({
+            type: "build:log",
+            stream: line.stream,
+            chunk: line.chunk,
+            ts: line.ts,
+          });
+        }
+      }
 
       // Replay history AFTER session:ready so the client knows where to put it.
       for (const m of history) {

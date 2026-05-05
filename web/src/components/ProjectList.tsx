@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
 import { api, type ProjectSummary } from "../lib/api.ts";
 
 type Props = {
@@ -15,6 +15,11 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
   const [newName, setNewName] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  // Inline rename: when set, that card's title is replaced with a text input
+  // pre-filled with the current name. ⌘↵ saves, Esc cancels.
+  const [renaming, setRenaming] = useState<number | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
 
   const load = async () => {
     try {
@@ -53,6 +58,35 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
       await load();
     } catch (err: any) {
       setError(err?.message ?? String(err));
+    }
+  };
+
+  const startRename = (p: ProjectSummary) => {
+    setRenaming(p.id);
+    setRenameDraft(p.displayName);
+  };
+
+  const cancelRename = () => {
+    setRenaming(null);
+    setRenameDraft("");
+  };
+
+  const commitRename = async () => {
+    if (renaming == null) return;
+    const trimmed = renameDraft.trim();
+    if (!trimmed) {
+      cancelRename();
+      return;
+    }
+    setRenameBusy(true);
+    try {
+      await api.renameProject(renaming, trimmed);
+      cancelRename();
+      await load();
+    } catch (err: any) {
+      setError(err?.message ?? String(err));
+    } finally {
+      setRenameBusy(false);
     }
   };
 
@@ -153,6 +187,27 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
                 </button>
               </div>
             </div>
+          ) : renaming === p.id ? (
+            <div key={p.id} className="picker-card-wrap">
+              <div className="picker-card picker-card-rename">
+                <RenameInput
+                  value={renameDraft}
+                  busy={renameBusy}
+                  onChange={setRenameDraft}
+                  onCommit={commitRename}
+                  onCancel={cancelRename}
+                />
+                <div className="picker-card-desc">
+                  ⌘↵ to save · Esc to cancel
+                </div>
+                <div className="picker-card-meta">
+                  <span className="picker-pill">{p.slug}</span>
+                  {p.github.connected && (
+                    <span className="picker-pill picker-pill-ok">GitHub</span>
+                  )}
+                </div>
+              </div>
+            </div>
           ) : (
             <div key={p.id} className="picker-card-wrap">
               <button
@@ -173,6 +228,18 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
               </button>
               <button
                 type="button"
+                className="picker-rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startRename(p);
+                }}
+                title="Rename project"
+                aria-label="Rename project"
+              >
+                ✏️
+              </button>
+              <button
+                type="button"
                 className="picker-delete"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -187,10 +254,75 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
         )}
 
         {projects?.length === 0 && !creating && (
-          <div className="picker-empty">No projects yet — click "New project" to start.</div>
+          <div className="empty-state picker-empty-rich">
+            <h2 className="empty-headline">Start your first build →</h2>
+            <p className="empty-body">
+              Spin up a fresh Astro starter and ask the agent to build whatever
+              you have in mind.
+            </p>
+            <button
+              type="button"
+              className="empty-cta"
+              onClick={() => setCreating(true)}
+            >
+              Create new project
+            </button>
+          </div>
         )}
       </div>
     </div>
+  );
+}
+
+function RenameInput({
+  value,
+  busy,
+  onChange,
+  onCommit,
+  onCancel,
+}: {
+  value: string;
+  busy: boolean;
+  onChange: (v: string) => void;
+  onCommit: () => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) {
+      el.focus();
+      try {
+        el.setSelectionRange(0, el.value.length);
+      } catch {}
+    }
+  }, []);
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onCancel();
+      return;
+    }
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey || !e.shiftKey)) {
+      e.preventDefault();
+      onCommit();
+    }
+  };
+
+  return (
+    <input
+      ref={ref}
+      type="text"
+      className="picker-rename-input"
+      value={value}
+      maxLength={80}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onKeyDown}
+      onBlur={onCommit}
+      disabled={busy}
+      placeholder="Project name"
+    />
   );
 }
 

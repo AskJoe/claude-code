@@ -1,177 +1,116 @@
 /**
- * Tiny safe markdown renderer for agent chat bubbles. Not a full implementation —
- * just the subset agents actually emit: headings, paragraphs, fenced code, inline
- * code, bold/italic, ordered/unordered lists, autolinks. Everything else passes
- * through as text. No dangerouslySetInnerHTML — every output is a real React node.
+ * Agent-chat markdown renderer. Built on `react-markdown` with `remark-gfm`
+ * (tables, task lists, strikethrough, autolinks) and `remark-breaks` (newlines
+ * become `<br>` so casual chat formatting renders the way users expect).
  *
- * Why custom: dropping a 50KB markdown lib for 5 tags worth of formatting is the
- * exact kind of overbuild that bloats UIs. ~80 lines beats marked + DOMPurify
- * here.
+ * Custom renderers replace the defaults for elements where we want more than
+ * the plain HTML output:
+ *   - `code` → fenced blocks go through Shiki for syntax highlighting; inline
+ *     code stays a simple styled `<code>`.
+ *   - `img`  → lazy-loaded, max-width capped, alt falls back to filename.
+ *   - `a`    → external links open in a new tab with safe rel attributes.
+ *   - `table`→ wrapped so it can scroll horizontally on narrow screens.
+ *
+ * The full rendered tree is cached by content string in an LRU (Phase 12.2)
+ * so re-renders during streaming or scrollback don't re-parse the same
+ * message every keystroke.
  */
 
-import { Fragment, type ReactNode } from "react";
+import { type ReactElement } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
+import { ShikiBlock } from "./shiki.tsx";
 
-export function renderMarkdown(src: string): ReactNode {
-  const lines = src.replace(/\r\n/g, "\n").split("\n");
-  const blocks: ReactNode[] = [];
-  let i = 0;
+const CACHE_LIMIT = 500;
+// Map preserves insertion order — re-set on hit promotes to MRU.
+const cache = new Map<string, ReactElement>();
 
-  while (i < lines.length) {
-    const line = lines[i];
+const components: Components = {
+  code(props) {
+    const { className, children, node, ...rest } = props;
+    const text = String(children ?? "").replace(/\n$/, "");
+    const langMatch = /language-([\w-]+)/.exec(className ?? "");
+    const isFenced = !!langMatch || text.includes("\n");
 
-    // Fenced code block ```lang ... ```
-    const fence = /^```(\w*)\s*$/.exec(line);
-    if (fence) {
-      const lang = fence[1] || "";
-      const start = i + 1;
-      let end = start;
-      while (end < lines.length && !/^```\s*$/.test(lines[end])) end++;
-      const code = lines.slice(start, end).join("\n");
-      blocks.push(
-        <pre key={blocks.length} className="md-pre" data-lang={lang || undefined}>
-          <code>{code}</code>
-        </pre>
-      );
-      i = end + 1;
-      continue;
+    if (isFenced) {
+      const lang = langMatch ? langMatch[1] : "";
+      return <ShikiBlock code={text} lang={lang} className="md-codeblock" />;
     }
 
-    // Headings
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      const level = heading[1].length;
-      const Tag = `h${Math.min(level, 4) + 2}` as "h3" | "h4" | "h5" | "h6";
-      blocks.push(
-        <Tag key={blocks.length} className="md-h">
-          {renderInline(heading[2])}
-        </Tag>
-      );
-      i++;
-      continue;
-    }
-
-    // Unordered list
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items: ReactNode[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
-        const text = lines[i].replace(/^\s*[-*]\s+/, "");
-        items.push(<li key={items.length}>{renderInline(text)}</li>);
-        i++;
-      }
-      blocks.push(
-        <ul key={blocks.length} className="md-ul">
-          {items}
-        </ul>
-      );
-      continue;
-    }
-
-    // Ordered list
-    if (/^\s*\d+\.\s+/.test(line)) {
-      const items: ReactNode[] = [];
-      while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        const text = lines[i].replace(/^\s*\d+\.\s+/, "");
-        items.push(<li key={items.length}>{renderInline(text)}</li>);
-        i++;
-      }
-      blocks.push(
-        <ol key={blocks.length} className="md-ol">
-          {items}
-        </ol>
-      );
-      continue;
-    }
-
-    // Blank line → paragraph break
-    if (line.trim() === "") {
-      i++;
-      continue;
-    }
-
-    // Paragraph: collect contiguous non-block lines
-    const paragraphLines = [line];
-    i++;
-    while (
-      i < lines.length &&
-      lines[i].trim() !== "" &&
-      !/^```/.test(lines[i]) &&
-      !/^#{1,6}\s/.test(lines[i]) &&
-      !/^\s*[-*]\s+/.test(lines[i]) &&
-      !/^\s*\d+\.\s+/.test(lines[i])
-    ) {
-      paragraphLines.push(lines[i]);
-      i++;
-    }
-    blocks.push(
-      <p key={blocks.length} className="md-p">
-        {renderInline(paragraphLines.join(" "))}
-      </p>
+    return (
+      <code className={`md-code${className ? " " + className : ""}`} {...rest}>
+        {children}
+      </code>
     );
-  }
+  },
 
-  return <>{blocks}</>;
-}
-
-/** Inline span renderer: code, bold, italic, links. */
-function renderInline(text: string): ReactNode {
-  // Token a string into [literal, code, bold, italic, link, autolink] segments.
-  // Order: code first (it doesn't process its content), then bold/italic, then links.
-  const out: ReactNode[] = [];
-  let rest = text;
-  let key = 0;
-
-  while (rest.length > 0) {
-    // `code` (single backticks)
-    const code = /`([^`]+)`/.exec(rest);
-    // **bold**
-    const bold = /\*\*([^*]+)\*\*/.exec(rest);
-    // *italic* (avoid matching **)
-    const italic = /(?<!\*)\*([^*\n]+)\*(?!\*)/.exec(rest);
-    // [text](url)
-    const link = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/.exec(rest);
-    // bare http/https URL
-    const autolink = /(https?:\/\/[^\s)]+)/.exec(rest);
-
-    const candidates = [code, bold, italic, link, autolink].filter(
-      (m): m is RegExpExecArray => !!m
+  img(props) {
+    const { src, alt } = props;
+    const fallback = typeof src === "string" ? src.split("/").pop() ?? "" : "";
+    return (
+      <img
+        src={typeof src === "string" ? src : undefined}
+        alt={alt && alt.length > 0 ? alt : fallback}
+        loading="lazy"
+        className="md-img"
+      />
     );
+  },
 
-    if (candidates.length === 0) {
-      out.push(rest);
-      break;
-    }
-
-    candidates.sort((a, b) => a.index - b.index);
-    const m = candidates[0];
-
-    if (m.index > 0) out.push(rest.slice(0, m.index));
-
-    if (m === code) {
-      out.push(
-        <code key={key++} className="md-code">
-          {m[1]}
-        </code>
-      );
-    } else if (m === bold) {
-      out.push(<strong key={key++}>{renderInline(m[1])}</strong>);
-    } else if (m === italic) {
-      out.push(<em key={key++}>{renderInline(m[1])}</em>);
-    } else if (m === link) {
-      out.push(
-        <a key={key++} href={m[2]} target="_blank" rel="noreferrer noopener">
-          {m[1]}
-        </a>
-      );
-    } else if (m === autolink) {
-      out.push(
-        <a key={key++} href={m[1]} target="_blank" rel="noreferrer noopener">
-          {m[1]}
+  a(props) {
+    const { href, children, ...rest } = props;
+    const isAbsolute = typeof href === "string" && /^https?:\/\//i.test(href);
+    if (isAbsolute) {
+      return (
+        <a href={href} target="_blank" rel="noopener noreferrer" {...rest}>
+          {children}
         </a>
       );
     }
+    return (
+      <a href={href} {...rest}>
+        {children}
+      </a>
+    );
+  },
 
-    rest = rest.slice(m.index + m[0].length);
+  table(props) {
+    return (
+      <div className="md-table-wrap">
+        <table {...props} />
+      </div>
+    );
+  },
+};
+
+const remarkPlugins = [remarkGfm, remarkBreaks];
+
+/**
+ * Render markdown to a React element. Same export signature as the previous
+ * mini-renderer so existing call sites (ChatPanel) don't change.
+ */
+export function renderMarkdown(text: string): ReactElement {
+  const cached = cache.get(text);
+  if (cached) {
+    // MRU promotion — delete + re-set bumps to most recent insertion.
+    cache.delete(text);
+    cache.set(text, cached);
+    return cached;
   }
 
-  return out.map((node, idx) => <Fragment key={idx}>{node}</Fragment>);
+  const element = (
+    <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
+      {text}
+    </ReactMarkdown>
+  );
+
+  cache.set(text, element);
+  if (cache.size > CACHE_LIMIT) {
+    // Evict the oldest entry (first key in insertion order).
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+
+  return element;
 }

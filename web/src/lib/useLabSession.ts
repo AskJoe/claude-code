@@ -60,6 +60,18 @@ export type LabBuildState = {
   lastError: string | null;
 };
 
+export type LabBuildLogLine = {
+  stream: "stdout" | "stderr";
+  chunk: string;
+  ts: number;
+};
+
+export type LabBuildLog = {
+  lines: LabBuildLogLine[];
+};
+
+const BUILD_LOG_MAX = 200;
+
 export type LabState = {
   status: "connecting" | "ready" | "thinking" | "closed" | "error" | "exhausted";
   sessionId: string | null;
@@ -70,6 +82,8 @@ export type LabState = {
   lastFilesChangedAt: number | null;
   /** Build pipeline status from the server's auto-builder. */
   build: LabBuildState;
+  /** Streaming stdout/stderr from the auto-builder, capped at 200 lines. */
+  buildLog: LabBuildLog;
   cumulativeCostUsd: number;
   budgetUsd: number;
   rateLimit: { perMinute: number };
@@ -97,6 +111,7 @@ export function useLabSession(
     lastBuildAt: null,
     lastError: null,
   });
+  const [buildLog, setBuildLog] = useState<LabBuildLog>({ lines: [] });
   const [cumulativeCostUsd, setCumulativeCostUsd] = useState(0);
   const [budgetUsd, setBudgetUsd] = useState(1.0);
   const [rateLimit, setRateLimit] = useState<{ perMinute: number }>({ perMinute: 20 });
@@ -116,6 +131,7 @@ export function useLabSession(
     setChat([]);
     setFiles([]);
     setCumulativeCostUsd(0);
+    setBuildLog({ lines: [] });
     filesEventCountRef.current = 0;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -146,6 +162,7 @@ export function useLabSession(
         setFiles,
         setLastFilesChangedAt,
         setBuild,
+        setBuildLog,
         setCumulativeCostUsd,
         setBudgetUsd,
         setRateLimit,
@@ -194,6 +211,7 @@ export function useLabSession(
     files,
     lastFilesChangedAt,
     build,
+    buildLog,
     cumulativeCostUsd,
     budgetUsd,
     rateLimit,
@@ -211,6 +229,7 @@ type Setters = {
   setFiles: (v: FileNode[]) => void;
   setLastFilesChangedAt: (v: number | null) => void;
   setBuild: (v: LabBuildState) => void;
+  setBuildLog: (fn: (prev: LabBuildLog) => LabBuildLog) => void;
   setCumulativeCostUsd: (v: number | ((prev: number) => number)) => void;
   setBudgetUsd: (v: number) => void;
   setRateLimit: (v: { perMinute: number }) => void;
@@ -387,6 +406,27 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
         status: event.status,
         lastBuildAt: event.lastBuildAt,
         lastError: event.lastError,
+      });
+      // A new build starting clears the prior log so the drawer doesn't pile
+      // up output across builds. Buffered replay of an in-progress build is
+      // still preserved (the server emits build:log lines after build:state
+      // building, in order).
+      if (event.status === "building") {
+        s.setBuildLog(() => ({ lines: [] }));
+      }
+      return;
+
+    case "build:log":
+      s.setBuildLog((prev) => {
+        const next = prev.lines.concat({
+          stream: event.stream,
+          chunk: event.chunk,
+          ts: event.ts,
+        });
+        if (next.length > BUILD_LOG_MAX) {
+          next.splice(0, next.length - BUILD_LOG_MAX);
+        }
+        return { lines: next };
       });
       return;
 

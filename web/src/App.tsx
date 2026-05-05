@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel.tsx";
 import { CodeView } from "./components/CodeView.tsx";
 import { PreviewPane } from "./components/PreviewPane.tsx";
+import { BuildLogDrawer } from "./components/BuildLogDrawer.tsx";
 import { GitHubBadge } from "./components/GitHubBadge.tsx";
 import { ProjectList } from "./components/ProjectList.tsx";
 import { PublishButton } from "./components/PublishButton.tsx";
@@ -10,7 +11,11 @@ import { AdminPage, type AdminTab } from "./components/AdminPage.tsx";
 import { AdminProjectView } from "./components/AdminProjectView.tsx";
 import { EditModeToggle } from "./components/EditModeToggle.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
+import { ThemeToggle } from "./components/ThemeToggle.tsx";
+import { ShortcutsOverlay } from "./components/ShortcutsOverlay.tsx";
+import { Welcome, shouldShowWelcome } from "./components/Welcome.tsx";
 import { useLabSession, type LabMode } from "./lib/useLabSession.ts";
+import { useTheme } from "./lib/useTheme.ts";
 
 function loadAgentMode(projectId: number): LabMode {
   try {
@@ -48,8 +53,13 @@ function navigate(to: string) {
 }
 
 export function App() {
+  // Theme applied app-wide; choice persists across sessions.
+  // Mounted at the top so SignIn / ProjectList / Lab all inherit the data-theme.
+  useTheme();
+
   const [me, setMe] = useState<Me | null>(null);
   const [route, setRoute] = useState<Route>(() => parseHash());
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -64,29 +74,63 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // Global `?` opens the shortcuts overlay. Bail when the user is typing in
+  // an input/textarea — `?` is a real character there.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      const tag = (e.target as HTMLElement | null)?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      // Avoid opening when a modifier is pressed (those are real shortcuts).
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      e.preventDefault();
+      setShortcutsOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  const overlay = (
+    <ShortcutsOverlay
+      open={shortcutsOpen}
+      onClose={() => setShortcutsOpen(false)}
+    />
+  );
+
   if (me === null) return <div className="boot-loader">Loading…</div>;
 
   if (me.requireAuth && !me.user) {
-    return <SignIn onSignedIn={() => api.me().then(setMe)} />;
+    return (
+      <>
+        <SignIn onSignedIn={() => api.me().then(setMe)} />
+        {overlay}
+      </>
+    );
   }
 
   if (route.kind === "admin" && me.user?.isAdmin) {
     return (
-      <AdminPage
-        tab={route.tab}
-        onTab={(t) => navigate(`/admin/${t}`)}
-        onExit={() => navigate("/")}
-        onOpenAdminProject={(pid) => navigate(`/admin/p/${pid}`)}
-      />
+      <>
+        <AdminPage
+          tab={route.tab}
+          onTab={(t) => navigate(`/admin/${t}`)}
+          onExit={() => navigate("/")}
+          onOpenAdminProject={(pid) => navigate(`/admin/p/${pid}`)}
+        />
+        {overlay}
+      </>
     );
   }
 
   if (route.kind === "admin-project" && me.user?.isAdmin) {
     return (
-      <AdminProjectView
-        projectId={route.id}
-        onExit={() => navigate("/admin/users")}
-      />
+      <>
+        <AdminProjectView
+          projectId={route.id}
+          onExit={() => navigate("/admin/users")}
+        />
+        {overlay}
+      </>
     );
   }
 
@@ -94,29 +138,36 @@ export function App() {
 
   if (route.kind === "list" || route.kind === "admin" || route.kind === "admin-project") {
     return (
-      <ProjectList
-        user={{
-          email: me.user?.email ?? "anonymous",
-          displayName: me.user?.displayName ?? null,
-          isAdmin: me.user?.isAdmin ?? false,
-        }}
-        onOpen={(id) => navigate(`/p/${id}`)}
-        onOpenAdmin={() => navigate("/admin/users")}
-        onLogout={async () => {
-          await api.logout();
-          setMe(await api.me());
-        }}
-      />
+      <>
+        <ProjectList
+          user={{
+            email: me.user?.email ?? "anonymous",
+            displayName: me.user?.displayName ?? null,
+            isAdmin: me.user?.isAdmin ?? false,
+          }}
+          onOpen={(id) => navigate(`/p/${id}`)}
+          onOpenAdmin={() => navigate("/admin/users")}
+          onLogout={async () => {
+            await api.logout();
+            setMe(await api.me());
+          }}
+        />
+        {overlay}
+      </>
     );
   }
 
   return (
-    <Lab
-      projectId={route.id}
-      isAdmin={me.user?.isAdmin ?? false}
-      onExit={() => navigate("/")}
-      onOpenAdmin={() => navigate("/admin/users")}
-    />
+    <>
+      <Lab
+        projectId={route.id}
+        isAdmin={me.user?.isAdmin ?? false}
+        onExit={() => navigate("/")}
+        onOpenAdmin={() => navigate("/admin/users")}
+        onShowShortcuts={() => setShortcutsOpen(true)}
+      />
+      {overlay}
+    </>
   );
 }
 
@@ -127,12 +178,15 @@ function Lab({
   isAdmin,
   onExit,
   onOpenAdmin,
+  onShowShortcuts,
 }: {
   projectId: number;
   isAdmin: boolean;
   onExit: () => void;
   onOpenAdmin: () => void;
+  onShowShortcuts: () => void;
 }) {
+  const theme = useTheme();
   const [agentMode, setAgentMode] = useState<LabMode>(() => loadAgentMode(projectId));
 
   // Persist the agent-mode choice per project so reopening keeps the
@@ -150,6 +204,14 @@ function Lab({
   const [connectRepoError, setConnectRepoError] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  // First-time welcome modal — only opens when localStorage flag is unset.
+  // Decided once on mount so dismissing doesn't re-flash on re-render.
+  const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => shouldShowWelcome());
+  // Prefilled prompt counter+text — bumping the counter on each push lets
+  // ChatPanel's effect re-run even when the same prompt is sent twice.
+  const [prefilled, setPrefilled] = useState<{ text: string; nonce: number } | null>(null);
+  const pushPrefilled = (text: string) =>
+    setPrefilled({ text, nonce: Date.now() });
 
   useEffect(() => {
     api
@@ -241,7 +303,12 @@ function Lab({
           <button type="button" className="brand brand-link" onClick={onExit}>
             ← Cloudwise Lab
           </button>
-          {project && <span className="topbar-project">{project.displayName}</span>}
+          {project && (
+            <div className="topbar-project-block">
+              <span className="topbar-project">{project.displayName}</span>
+              <ProjectMetaStrip project={project} />
+            </div>
+          )}
           <div className="view-toggle" role="tablist" aria-label="Agent mode">
             <button
               type="button"
@@ -292,6 +359,11 @@ function Lab({
           </div>
         </div>
         <div className="topbar-meta">
+          <ThemeToggle
+            choice={theme.choice}
+            resolved={theme.resolved}
+            onCycle={theme.cycle}
+          />
           {isAdmin && (
             <button
               type="button"
@@ -392,17 +464,32 @@ function Lab({
             chat={lab.chat}
             cumulativeCostUsd={lab.cumulativeCostUsd}
             budgetUsd={lab.budgetUsd}
+            projectId={projectId}
+            sessionId={lab.sessionId}
             onSend={lab.send}
             onAbort={lab.abort}
             onReset={lab.reset}
+            onSetRightView={setRightView}
+            onSetTheme={theme.setChoice}
+            onShowShortcuts={onShowShortcuts}
+            onShowHistory={() => setHistoryOpen(true)}
+            prefilledPrompt={prefilled?.text}
+            prefilledNonce={prefilled?.nonce}
           />
         </section>
         <section className="pane pane-right">
-          {rightView === "preview" ? (
-            <PreviewPane previewBase={lab.previewBase} reloadKey={reloadKey} />
-          ) : (
-            <CodeView files={lab.files} previewBase={lab.previewBase} />
-          )}
+          <div className="pane-right-main">
+            {rightView === "preview" ? (
+              <PreviewPane previewBase={lab.previewBase} reloadKey={reloadKey} />
+            ) : (
+              <CodeView files={lab.files} previewBase={lab.previewBase} />
+            )}
+          </div>
+          <BuildLogDrawer
+            build={lab.build}
+            buildLog={lab.buildLog}
+            projectId={projectId}
+          />
         </section>
       </main>
       <HistoryPanel
@@ -411,6 +498,47 @@ function Lab({
         onClose={() => setHistoryOpen(false)}
         onAfterRevert={refreshProject}
       />
+      {welcomeOpen && (
+        <Welcome
+          onDismiss={() => setWelcomeOpen(false)}
+          onSamplePrompt={(text) => {
+            pushPrefilled(text);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Small grey strip under the project title showing slug · render service ·
+ * github repo. Only the parts that exist on the project are rendered.
+ */
+function ProjectMetaStrip({ project }: { project: ProjectSummary }) {
+  // Render service name is encoded in the on-render.com siteUrl. When the
+  // user has confirmed a deploy, render.siteUrl looks like
+  // "https://<service>.onrender.com". We slice that prefix back out.
+  const renderService =
+    project.render.siteUrl &&
+    /^https?:\/\/([^./]+)\.onrender\.com/.exec(project.render.siteUrl)?.[1];
+  const repo =
+    project.github.connected && project.github.repoFullName
+      ? project.github.repoFullName
+      : null;
+
+  const parts: string[] = [];
+  parts.push(project.slug);
+  if (renderService) parts.push(`render: ${renderService}`);
+  if (repo) parts.push(`github: ${repo}`);
+
+  return (
+    <div className="topbar-project-meta" title="Project identifiers">
+      {parts.map((p, i) => (
+        <span key={i} className="topbar-project-meta-part">
+          {i === 0 ? <span className="topbar-project-meta-slug">{p}</span> : p}
+          {i < parts.length - 1 && <span className="topbar-project-meta-sep"> · </span>}
+        </span>
+      ))}
     </div>
   );
 }

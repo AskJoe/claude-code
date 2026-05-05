@@ -56,6 +56,16 @@ export type ServerEvent =
       status: "idle" | "building" | "ok" | "error";
       lastBuildAt: number | null;
       lastError: string | null;
+    }
+  // Streaming chunk of build stdout/stderr from `npm run build`. Emitted by
+  // the auto-builder so the BuildLogDrawer can show live build output. The
+  // server keeps the last 200 lines per session in memory; on reconnect /
+  // session open the buffered tail can be replayed.
+  | {
+      type: "build:log";
+      stream: "stdout" | "stderr";
+      chunk: string;
+      ts: number;
     };
 
 /** Client → server */

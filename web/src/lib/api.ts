@@ -271,4 +271,23 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+
+  restartBuilder: (projectId: number) =>
+    request<{ ok: boolean; reason?: string }>(
+      `/api/projects/${projectId}/builder/restart`,
+      { method: "POST" }
+    ),
 };
+
+/**
+ * URL helper for transcript export. The command palette (and any direct
+ * download buttons) use this with `window.location.href = exportSessionUrl(...)`
+ * so the browser respects the server's Content-Disposition: attachment header.
+ */
+export function exportSessionUrl(
+  projectId: number,
+  sessionId: string,
+  format: "markdown" | "html" | "json"
+): string {
+  return `/api/projects/${projectId}/sessions/${sessionId}/export?format=${format}`;
+}

@@ -28,6 +28,73 @@ export const PREVIEW_EDITOR_RUNTIME = String.raw`
   let hoveredEl = null;
   let editingEl = null;
 
+  // ── Console forwarder ────────────────────────────────────────────────────
+  // The lab's PreviewPane renders a console drawer fed by these messages.
+  // We forward console.log/info/warn/error/debug plus uncaught errors and
+  // unhandled promise rejections. Use a different message type ("lab:console")
+  // from the edit-mode plumbing so the parent's listeners don't cross wires.
+
+  function safeStringify(value) {
+    try {
+      if (value === null) return "null";
+      if (value === undefined) return "undefined";
+      if (typeof value === "string") return value;
+      if (typeof value === "number" || typeof value === "boolean") return String(value);
+      if (typeof value === "function") return "[Function" + (value.name ? ": " + value.name : "") + "]";
+      if (value instanceof Error) return value.stack || (value.name + ": " + value.message);
+      if (typeof value === "object") {
+        try { return JSON.stringify(value); }
+        catch (_) {
+          try { return String(value); } catch (__) { return "[unstringifiable]"; }
+        }
+      }
+      return String(value);
+    } catch (_) {
+      return "[unstringifiable]";
+    }
+  }
+
+  function postConsole(level, args) {
+    try {
+      var serialized = [];
+      for (var i = 0; i < args.length; i++) {
+        var s = safeStringify(args[i]);
+        if (s.length > 4000) s = s.slice(0, 4000) + "…";
+        serialized.push(s);
+      }
+      window.parent.postMessage({
+        type: "lab:console",
+        level: level,
+        args: serialized,
+        ts: Date.now(),
+      }, "*");
+    } catch (_) {}
+  }
+
+  var levels = ["log", "info", "warn", "error", "debug"];
+  for (var li = 0; li < levels.length; li++) {
+    (function (lvl) {
+      var orig = console[lvl];
+      console[lvl] = function () {
+        var args = Array.prototype.slice.call(arguments);
+        postConsole(lvl, args);
+        if (typeof orig === "function") {
+          try { orig.apply(console, args); } catch (_) {}
+        }
+      };
+    })(levels[li]);
+  }
+
+  window.addEventListener("error", function (e) {
+    var msg = (e && e.message) ? e.message : "Uncaught error";
+    var loc = e && e.filename ? (e.filename + ":" + (e.lineno || 0) + ":" + (e.colno || 0)) : "";
+    postConsole("error", [msg + (loc ? " (" + loc + ")" : "")]);
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var reason = e && e.reason;
+    postConsole("error", ["Unhandled promise rejection: " + safeStringify(reason)]);
+  });
+
   // ── Style ────────────────────────────────────────────────────────────────
 
   const style = document.createElement("style");
