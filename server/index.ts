@@ -55,6 +55,13 @@ import {
 } from "./projects.ts";
 import {
   appendMessage,
+  archiveAndStartNewChatSession,
+  getChatSession,
+  getOrCreateActiveChatSession,
+  listChatSessions,
+  listMessagesForSession,
+  updateChatSessionMeta,
+  type ChatSessionRow,
   getGithubConnection,
   getProjectById,
   listMessages,
@@ -144,6 +151,66 @@ app.post("/api/projects/:id/rename", authMiddleware, async (c) => {
   renameProject(id, displayName);
   return c.json({ ok: true });
 });
+
+// List all chat sessions for a project, newest active first then archived.
+app.get("/api/projects/:id/chat-sessions", authMiddleware, (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  const sessions = listChatSessions(id).map((s) => ({
+    id: s.id,
+    title: s.title,
+    createdAt: s.created_at,
+    lastMessageAt: s.last_message_at,
+    messageCount: s.message_count,
+    totalCostUsd: s.total_cost_usd,
+    archived: s.archived_at !== null,
+  }));
+  return c.json({ sessions });
+});
+
+// Replay messages for a specific (typically archived) chat session as a
+// JSON list. Used by the sidebar's "view archived chat" mode.
+app.get(
+  "/api/projects/:id/chat-sessions/:sid/messages",
+  authMiddleware,
+  (c) => {
+    const user = c.get("user");
+    const id = Number(c.req.param("id"));
+    const sid = Number(c.req.param("sid"));
+    if (!Number.isFinite(id) || !Number.isFinite(sid))
+      return c.json({ error: "bad id" }, 400);
+    const project = getProjectFor(user.id, id);
+    if (!project) return c.json({ error: "not found" }, 404);
+    const session = getChatSession(id, sid);
+    if (!session) return c.json({ error: "session not found" }, 404);
+    const rows = listMessagesForSession(id, sid, 500);
+    // Inflate stored content_json into ServerEvent shapes for the client.
+    const messages = rows
+      .map((r) => {
+        try {
+          return JSON.parse(r.content_json);
+        } catch {
+          return null;
+        }
+      })
+      .filter((m): m is Record<string, unknown> => m !== null);
+    return c.json({
+      session: {
+        id: session.id,
+        title: session.title,
+        createdAt: session.created_at,
+        lastMessageAt: session.last_message_at,
+        messageCount: session.message_count,
+        totalCostUsd: session.total_cost_usd,
+        archived: session.archived_at !== null,
+      },
+      messages,
+    });
+  }
+);
 
 app.get("/api/projects/:id/publish-status", authMiddleware, async (c) => {
   const user = c.get("user");
@@ -751,6 +818,14 @@ app.get(
     let autoSync: AutoSyncer | null = null;
     let autoBuilder: AutoBuilder | null = null;
     let emitRaw: (e: ServerEvent) => void = () => {};
+    // Active chat session row for this WS — every persisted message gets
+    // tagged with chat_session_id so the sessions sidebar can browse history.
+    let chatSession: ChatSessionRow | null = null;
+    // Roll-up state for the active chat session, flushed to DB after each
+    // persist to keep the sidebar's last_message_at / count / cost fresh.
+    let chatMessageCount = 0;
+    let chatTotalCost = 0;
+    let chatTitleProposed: string | null = null;
     // Snapshot the rate limit at session-open time. Admin changes via the
     // Settings tab take effect on subsequent new sessions.
     const sessionRateLimit = getSettings().rateLimitPerMinute;
@@ -764,10 +839,27 @@ app.get(
       try {
         appendMessage({
           projectId: project.id,
+          chatSessionId: chatSession?.id ?? null,
           role,
           contentJson: JSON.stringify(e),
           costUsd: cost,
         });
+        // Roll-up: keep chat_sessions.last_message_at / count / cost fresh so
+        // the sidebar's per-session card shows accurate metadata.
+        if (chatSession) {
+          chatMessageCount += 1;
+          if (cost) chatTotalCost += cost;
+          // Title backfill — first user message becomes the title (clipped).
+          if (!chatTitleProposed && e.type === "chat:user_message") {
+            chatTitleProposed = e.text.trim().slice(0, 60);
+          }
+          updateChatSessionMeta({
+            sessionId: chatSession.id,
+            messageCount: chatMessageCount,
+            totalCostUsd: chatTotalCost,
+            proposedTitle: chatTitleProposed,
+          });
+        }
       } catch (err) {
         log.error("persist message failed", { err: String(err) });
       }
@@ -790,8 +882,18 @@ app.get(
       }
       project = publicProject(row);
 
-      // Replay last 200 messages so the chat history is restored.
-      const history = listMessages(project.id, 200);
+      // Resolve the active chat session for this project. New projects get
+      // one created on the spot. Previous chats live archived in the
+      // sidebar.
+      chatSession = getOrCreateActiveChatSession(project.id);
+      chatMessageCount = chatSession.message_count ?? 0;
+      chatTotalCost = chatSession.total_cost_usd ?? 0;
+      chatTitleProposed = chatSession.title;
+
+      // Replay last 200 messages from THIS session so the chat resumes
+      // where the user left off. (Archived sessions are browsed via the
+      // sidebar; the WS only ever drives the active one.)
+      const history = listMessagesForSession(project.id, chatSession.id, 200);
 
       // If this project is connected to GitHub, install the auto-syncer.
       // It pings on every fs change and runs a debounced add/commit/push.
@@ -958,6 +1060,7 @@ app.get(
             // it back as-is and render in chat history.
             appendMessage({
               projectId: project.id,
+              chatSessionId: chatSession?.id ?? null,
               role: "user",
               contentJson: JSON.stringify({
                 type: "chat:user_message",
@@ -965,6 +1068,20 @@ app.get(
               } satisfies ServerEvent),
               costUsd: null,
             });
+            // Bump the active chat session's roll-up too — same fields
+            // persist() handles for server-side events.
+            if (chatSession) {
+              chatMessageCount += 1;
+              if (!chatTitleProposed) {
+                chatTitleProposed = cmd.text.trim().slice(0, 60);
+              }
+              updateChatSessionMeta({
+                sessionId: chatSession.id,
+                messageCount: chatMessageCount,
+                totalCostUsd: chatTotalCost,
+                proposedTitle: chatTitleProposed,
+              });
+            }
             await agent.send(cmd.text);
             return;
           }
@@ -973,12 +1090,15 @@ app.get(
             return;
           }
           case "session:reset": {
-            // Resetting a project-backed session means: clear chat, but keep
-            // files. (Files belong to the project, the user can edit them
-            // via the agent or delete the whole project to wipe.)
+            // Reset = archive the current chat and start a new one. Files
+            // belong to the project (shared across all chats) so they
+            // stay put. Old conversations remain browsable in the sidebar.
             if (project) {
-              const { deleteMessages } = await import("./db.ts");
-              deleteMessages(project.id);
+              const fresh = archiveAndStartNewChatSession(project.id);
+              chatSession = fresh;
+              chatMessageCount = 0;
+              chatTotalCost = 0;
+              chatTitleProposed = null;
             }
             await teardownSession();
             await initSession();

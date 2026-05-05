@@ -4057,3 +4057,163 @@ textarea {
 }
 .role-tag.role-assistant { background: var(--accent-tint); color: var(--accent); }
 .role-tag.role-user { background: var(--blue-bg); color: var(--blue); }
+
+/* ── Phase 4.1 — past-chats sidebar + archived viewer ──────────────────── */
+
+.sessions-sidebar-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  background: rgba(0, 0, 0, 0.18);
+}
+.sessions-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(340px, 90vw);
+  z-index: 46;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  animation: sessions-sidebar-in 180ms ease-out;
+}
+@keyframes sessions-sidebar-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+.sessions-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.sessions-sidebar-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  margin: 0;
+  color: var(--text-strong);
+}
+.sessions-sidebar-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--text-3);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.sessions-sidebar-close:hover { color: var(--text); background: var(--bg-3); }
+.sessions-sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sessions-sidebar-empty {
+  padding: 20px 12px;
+  font-size: 12px;
+  color: var(--text-3);
+  text-align: center;
+  line-height: 1.4;
+}
+.session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+}
+.session-card:hover:not(:disabled) {
+  background: var(--bg-2);
+  border-color: var(--accent);
+}
+.session-card:disabled { cursor: default; opacity: 0.92; }
+.session-card-active {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+.session-card-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.session-card-title {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.session-card-badge {
+  font-size: 9px;
+  background: var(--accent);
+  color: var(--accent-text);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.session-card-meta {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+  display: flex;
+  gap: 4px;
+}
+.session-card-meta .sep { opacity: 0.5; }
+
+/* Archived chat viewer */
+.archived-viewer { padding: 0; }
+.archived-viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.archived-viewer-title {
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--text-strong);
+  flex: 1;
+}
+.archived-viewer-meta {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+}
+.archived-viewer-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--text-3);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+}
+.archived-viewer-close:hover { color: var(--text); background: var(--bg-3); }
+.archived-viewer-body {
+  padding: 12px 16px;
+  overflow-y: auto;
+  max-height: calc(70vh - 56px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}

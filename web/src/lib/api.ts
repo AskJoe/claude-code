@@ -110,6 +110,16 @@ export type GithubStatus = {
   githubLogin: string | null;
 };
 
+export type ChatSessionSummary = {
+  id: number;
+  title: string | null;
+  createdAt: string;
+  lastMessageAt: string | null;
+  messageCount: number;
+  totalCostUsd: number;
+  archived: boolean;
+};
+
 async function request<T>(
   path: string,
   init: RequestInit = {}
@@ -153,6 +163,18 @@ export const api = {
 
   logout: () =>
     request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
+
+  // Chat sessions sidebar (Phase 4.1)
+  listChatSessions: (projectId: number) =>
+    request<{ sessions: ChatSessionSummary[] }>(
+      `/api/projects/${projectId}/chat-sessions`
+    ),
+
+  getChatSessionMessages: (projectId: number, sessionId: number) =>
+    request<{
+      session: ChatSessionSummary;
+      messages: Array<Record<string, unknown>>;
+    }>(`/api/projects/${projectId}/chat-sessions/${sessionId}/messages`),
 
   // Settings panel — profile + system prompt.
   updateProfile: ({ displayName }: { displayName: string }) =>

@@ -274,17 +274,123 @@ export function renameProject(id: number, displayName: string): void {
   sRenameProject.run(displayName, id);
 }
 
+// ── Chat sessions ────────────────────────────────────────────────────────────
+
+export type ChatSessionRow = {
+  id: number;
+  project_id: number;
+  title: string | null;
+  created_at: string;
+  last_message_at: string | null;
+  message_count: number;
+  total_cost_usd: number;
+  archived_at: string | null;
+};
+
+const sCreateChatSession = db.prepare<[number, string | null], void>(
+  `INSERT INTO chat_sessions (project_id, title) VALUES (?, ?)`
+);
+const sGetActiveChatSession = db.prepare<[number], ChatSessionRow>(
+  `SELECT * FROM chat_sessions
+     WHERE project_id = ? AND archived_at IS NULL
+     ORDER BY id DESC LIMIT 1`
+);
+const sGetChatSession = db.prepare<[number, number], ChatSessionRow>(
+  `SELECT * FROM chat_sessions WHERE id = ? AND project_id = ?`
+);
+const sListChatSessions = db.prepare<[number], ChatSessionRow>(
+  `SELECT * FROM chat_sessions
+     WHERE project_id = ?
+     ORDER BY (archived_at IS NULL) DESC, COALESCE(last_message_at, created_at) DESC`
+);
+const sArchiveChatSession = db.prepare<[number], void>(
+  `UPDATE chat_sessions
+     SET archived_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     WHERE id = ? AND archived_at IS NULL`
+);
+const sUpdateSessionMeta = db.prepare<
+  [number, number, string | null, number],
+  void
+>(
+  `UPDATE chat_sessions
+     SET last_message_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+         message_count = ?,
+         total_cost_usd = ?,
+         title = COALESCE(title, ?)
+     WHERE id = ?`
+);
+
+/** Look up the active (non-archived) session for a project. Creates one if
+ * none exists yet — the lab always wants a writable destination on first
+ * connect. */
+export function getOrCreateActiveChatSession(
+  projectId: number
+): ChatSessionRow {
+  const existing = sGetActiveChatSession.get(projectId);
+  if (existing) return existing;
+  sCreateChatSession.run(projectId, null);
+  const row = sGetActiveChatSession.get(projectId);
+  if (!row) throw new Error("could not create chat session");
+  return row;
+}
+
+export function listChatSessions(projectId: number): ChatSessionRow[] {
+  return sListChatSessions.all(projectId);
+}
+
+export function getChatSession(
+  projectId: number,
+  sessionId: number
+): ChatSessionRow | null {
+  return sGetChatSession.get(sessionId, projectId) ?? null;
+}
+
+/** Archive the active session and start a new one. Returns the new active
+ * row. Used by the WS reset handler. */
+export function archiveAndStartNewChatSession(
+  projectId: number
+): ChatSessionRow {
+  const active = sGetActiveChatSession.get(projectId);
+  if (active) sArchiveChatSession.run(active.id);
+  sCreateChatSession.run(projectId, null);
+  const row = sGetActiveChatSession.get(projectId);
+  if (!row) throw new Error("could not start new chat session");
+  return row;
+}
+
+/** Update a session's roll-up fields after a turn. Title (if not yet set)
+ * gets the trimmed first user message — caller passes that in. */
+export function updateChatSessionMeta(input: {
+  sessionId: number;
+  messageCount: number;
+  totalCostUsd: number;
+  proposedTitle: string | null;
+}): void {
+  sUpdateSessionMeta.run(
+    input.messageCount,
+    input.totalCostUsd,
+    input.proposedTitle,
+    input.sessionId
+  );
+}
+
 // ── Message statements ───────────────────────────────────────────────────────
 
 const sAppendMessage = db.prepare<
-  [number, string, string, number | null],
+  [number, number | null, string, string, number | null],
   void
 >(`
-  INSERT INTO messages (project_id, role, content_json, cost_usd)
-  VALUES (?, ?, ?, ?);
+  INSERT INTO messages (project_id, chat_session_id, role, content_json, cost_usd)
+  VALUES (?, ?, ?, ?, ?);
 `);
 const sListMessages = db.prepare<[number, number], MessageRow>(
   "SELECT * FROM messages WHERE project_id = ? ORDER BY id DESC LIMIT ?"
+);
+const sListMessagesForSession = db.prepare<
+  [number, number, number],
+  MessageRow
+>(
+  "SELECT * FROM messages WHERE project_id = ? AND chat_session_id = ? ORDER BY id ASC LIMIT ?"
 );
 const sDeleteMessages = db.prepare<[number], void>(
   "DELETE FROM messages WHERE project_id = ?"
@@ -292,12 +398,14 @@ const sDeleteMessages = db.prepare<[number], void>(
 
 export function appendMessage(input: {
   projectId: number;
+  chatSessionId: number | null;
   role: string;
   contentJson: string;
   costUsd: number | null;
 }): void {
   sAppendMessage.run(
     input.projectId,
+    input.chatSessionId,
     input.role,
     input.contentJson,
     input.costUsd
@@ -306,6 +414,14 @@ export function appendMessage(input: {
 
 export function listMessages(projectId: number, limit = 500): MessageRow[] {
   return sListMessages.all(projectId, limit).reverse();
+}
+
+export function listMessagesForSession(
+  projectId: number,
+  sessionId: number,
+  limit = 500
+): MessageRow[] {
+  return sListMessagesForSession.all(projectId, sessionId, limit);
 }
 
 export function deleteMessages(projectId: number): void {

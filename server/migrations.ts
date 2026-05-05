@@ -110,6 +110,45 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE users ADD COLUMN system_prompt TEXT;
     `,
   },
+  {
+    // Multi-session per project. A "chat session" is one continuous
+    // conversation thread; `archived_at IS NULL` marks the active one. Reset
+    // becomes "archive the current session and start a new one" so history
+    // is browsable instead of wiped.
+    id: 5,
+    name: "chat-sessions",
+    sql: `
+      CREATE TABLE IF NOT EXISTS chat_sessions (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id      INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title           TEXT,
+        created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        last_message_at TEXT,
+        message_count   INTEGER NOT NULL DEFAULT 0,
+        total_cost_usd  REAL NOT NULL DEFAULT 0,
+        archived_at     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS chat_sessions_project_idx
+        ON chat_sessions(project_id, archived_at, id);
+
+      ALTER TABLE messages ADD COLUMN chat_session_id INTEGER
+        REFERENCES chat_sessions(id) ON DELETE CASCADE;
+
+      -- Backfill: every existing project gets a "Legacy" chat session whose
+      -- id we assign to all of that project's messages.
+      INSERT INTO chat_sessions (project_id, title, archived_at)
+        SELECT id, 'Legacy archive', strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        FROM projects;
+
+      UPDATE messages SET chat_session_id = (
+        SELECT id FROM chat_sessions
+        WHERE chat_sessions.project_id = messages.project_id
+          AND chat_sessions.title = 'Legacy archive'
+        LIMIT 1
+      )
+      WHERE chat_session_id IS NULL;
+    `,
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

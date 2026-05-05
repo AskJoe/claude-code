@@ -17,6 +17,7 @@ import { SettingsPanel } from "./components/SettingsPanel.tsx";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.tsx";
 import { QuickFile } from "./components/QuickFile.tsx";
 import { GlobalSearch } from "./components/GlobalSearch.tsx";
+import { SessionsSidebar } from "./components/SessionsSidebar.tsx";
 import { Welcome, shouldShowWelcome } from "./components/Welcome.tsx";
 import { useLabSession, type LabMode } from "./lib/useLabSession.ts";
 import { useTheme } from "./lib/useTheme.ts";
@@ -247,6 +248,7 @@ function Lab({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [quickFileOpen, setQuickFileOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
   // Filename to highlight in CodeView when set via quick file picker / search.
   const [requestedFile, setRequestedFile] = useState<string | null>(null);
   // First-time welcome modal — only opens when localStorage flag is unset.
@@ -449,6 +451,14 @@ function Lab({
             </button>
           )}
           <EditModeToggle on={editMode} onToggle={() => setEditMode((m) => !m)} />
+          <button
+            type="button"
+            className="topbar-admin-link"
+            onClick={() => setSessionsOpen(true)}
+            title="Past chats for this project"
+          >
+            💬 Past chats
+          </button>
           {project?.github.connected && (
             <button
               type="button"
@@ -607,6 +617,12 @@ function Lab({
           setRequestedFile(path);
           setRightView("code");
         }}
+      />
+      <SessionsSidebar
+        projectId={projectId}
+        open={sessionsOpen}
+        onClose={() => setSessionsOpen(false)}
+        bumpKey={lab.cumulativeCostUsd}
       />
     </div>
   );
