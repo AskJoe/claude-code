@@ -14,6 +14,9 @@ import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { ThemeToggle } from "./components/ThemeToggle.tsx";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay.tsx";
 import { SettingsPanel } from "./components/SettingsPanel.tsx";
+import { ProjectSwitcher } from "./components/ProjectSwitcher.tsx";
+import { QuickFile } from "./components/QuickFile.tsx";
+import { GlobalSearch } from "./components/GlobalSearch.tsx";
 import { Welcome, shouldShowWelcome } from "./components/Welcome.tsx";
 import { useLabSession, type LabMode } from "./lib/useLabSession.ts";
 import { useTheme } from "./lib/useTheme.ts";
@@ -242,6 +245,10 @@ function Lab({
   const [connectRepoError, setConnectRepoError] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [quickFileOpen, setQuickFileOpen] = useState(false);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  // Filename to highlight in CodeView when set via quick file picker / search.
+  const [requestedFile, setRequestedFile] = useState<string | null>(null);
   // First-time welcome modal — only opens when localStorage flag is unset.
   // Decided once on mount so dismissing doesn't re-flash on re-render.
   const [welcomeOpen, setWelcomeOpen] = useState<boolean>(() => shouldShowWelcome());
@@ -318,16 +325,33 @@ function Lab({
   }, [lab]);
 
   // Cmd/Ctrl+E at the lab level toggles edit mode (works even when the
-  // iframe doesn't have focus).
+  // iframe doesn't have focus). ⌘P opens quick file picker. ⌘⇧F opens
+  // global search.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && (e.key === "e" || e.key === "E")) {
-        // Only when we're on a project with a preview, not while typing in
-        // the chat textarea.
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      // Edit mode toggle
+      if (e.key === "e" || e.key === "E") {
         const tag = (e.target as HTMLElement | null)?.tagName ?? "";
         if (tag === "TEXTAREA" || tag === "INPUT") return;
         e.preventDefault();
         setEditMode((m) => !m);
+        return;
+      }
+      // Quick file picker
+      if (e.key === "p" || e.key === "P") {
+        if (e.shiftKey) return; // ⌘⇧P reserved for command palette family
+        e.preventDefault();
+        setQuickFileOpen((o) => !o);
+        return;
+      }
+      // Global search ⌘⇧F (case-insensitive). Letting through ⌘F so the
+      // browser's native page-find still works.
+      if ((e.key === "f" || e.key === "F") && e.shiftKey) {
+        e.preventDefault();
+        setGlobalSearchOpen((o) => !o);
+        return;
       }
     };
     window.addEventListener("keydown", onKey);
@@ -343,7 +367,11 @@ function Lab({
           </button>
           {project && (
             <div className="topbar-project-block">
-              <span className="topbar-project">{project.displayName}</span>
+              <ProjectSwitcher
+                activeProject={project}
+                onPick={(id) => navigate(`/p/${id}`)}
+                onOpenList={onExit}
+              />
               <ProjectMetaStrip project={project} />
             </div>
           )}
@@ -534,7 +562,11 @@ function Lab({
             {rightView === "preview" ? (
               <PreviewPane previewBase={lab.previewBase} reloadKey={reloadKey} />
             ) : (
-              <CodeView files={lab.files} previewBase={lab.previewBase} />
+              <CodeView
+                files={lab.files}
+                previewBase={lab.previewBase}
+                requestedFile={requestedFile}
+              />
             )}
           </div>
           <BuildLogDrawer
@@ -558,6 +590,24 @@ function Lab({
           }}
         />
       )}
+      <QuickFile
+        open={quickFileOpen}
+        onClose={() => setQuickFileOpen(false)}
+        files={lab.files}
+        onPick={(path) => {
+          setRequestedFile(path);
+          setRightView("code");
+        }}
+      />
+      <GlobalSearch
+        open={globalSearchOpen}
+        onClose={() => setGlobalSearchOpen(false)}
+        projectId={projectId}
+        onPickFile={(path) => {
+          setRequestedFile(path);
+          setRightView("code");
+        }}
+      />
     </div>
   );
 }

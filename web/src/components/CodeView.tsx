@@ -6,6 +6,9 @@ import type { FileNode } from "../../../shared/events.ts";
 type Props = {
   files: FileNode[];
   previewBase: string | null;
+  /** When set (or bumped), select this file path. Used by Quick File picker
+   *  (⌘P) and Global Search to jump to a result. */
+  requestedFile?: string | null;
 };
 
 type SaveStatus = "idle" | "saving" | "ok" | "error";
@@ -17,7 +20,7 @@ type SaveStatus = "idle" | "saving" | "ok" | "error";
  * the buffer to disk via PUT /api/projects/:id/files; the auto-builder's
  * chokidar watcher then picks up the change and triggers a rebuild.
  */
-export function CodeView({ files, previewBase }: Props) {
+export function CodeView({ files, previewBase, requestedFile }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
@@ -47,6 +50,15 @@ export function CodeView({ files, previewBase }: Props) {
     });
     return () => obs.disconnect();
   }, []);
+
+  // External request to open a specific file (Quick File picker, Global
+  // Search). Switching to that path runs the same fetch as a click in the
+  // tree.
+  useEffect(() => {
+    if (!requestedFile) return;
+    if (requestedFile === selected) return;
+    setSelected(requestedFile);
+  }, [requestedFile, selected]);
 
   // Default-select something useful as soon as the tree fills in.
   useEffect(() => {

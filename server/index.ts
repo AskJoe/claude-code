@@ -80,6 +80,7 @@ import {
 } from "./publish-promote.ts";
 import { resolveSessionPath } from "./sessions.ts";
 import { mountUploads } from "./uploads.ts";
+import { mountSearch } from "./search.ts";
 import { mountExport } from "./export.ts";
 import type {
   ClientCommand,
@@ -411,6 +412,9 @@ app.post("/api/projects/:id/github/connect-repo", authMiddleware, async (c) => {
 
 // File uploads (POST /api/projects/:id/upload)
 mountUploads(app);
+
+// Global search across files + chat history (GET /api/projects/:id/search)
+mountSearch(app);
 
 // Transcript export (GET /api/projects/:id/sessions/:sid/export)
 mountExport(app);
