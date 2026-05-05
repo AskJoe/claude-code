@@ -68,13 +68,28 @@ declare module "hono" {
   }
 }
 
+/** Whether the lab should ask users to verify their email.
+ *
+ * Default: derived from SMTP config — if we can't actually deliver mail, we
+ * silently mark everyone as verified so the banner doesn't pester users
+ * about an action they can't take. Override with LAB_REQUIRE_EMAIL_VERIFY=1
+ * or =0 if you want to force the behavior. */
+function isVerifyRequired(): boolean {
+  const env = process.env.LAB_REQUIRE_EMAIL_VERIFY;
+  if (env === "0" || env === "false") return false;
+  if (env === "1" || env === "true") return true;
+  return isSmtpConfigured();
+}
+
 function userFromRow(row: UserRow): AuthUser {
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
     isAdmin: row.is_admin === 1,
-    emailVerified: row.email_verified === 1,
+    // Pretend verified when verification isn't required — keeps the
+    // bottom-right banner from nagging users in dev / no-SMTP setups.
+    emailVerified: row.email_verified === 1 || !isVerifyRequired(),
   };
 }
 
@@ -239,15 +254,18 @@ export function registerAuthRoutes(app: Hono): void {
     const row = createUser({ email, passwordHash, displayName });
     await setSessionCookie(c, row.id);
     log.info("user signup", { userId: row.id, email });
-    // Auto-issue + send verify email. Failure to send doesn't block signup;
-    // the user can request a fresh email from the in-app banner.
-    try {
-      await issueAndEmail({ c, user: row, kind: "verify" });
-    } catch (err: any) {
-      log.warn("verify email send failed at signup", {
-        userId: row.id,
-        err: err?.message ?? String(err),
-      });
+    // Auto-issue + send verify email — only when verification is actually
+    // required. Skipping in no-SMTP setups keeps the dev console clean and
+    // avoids issuing tokens that have nowhere useful to land.
+    if (isVerifyRequired()) {
+      try {
+        await issueAndEmail({ c, user: row, kind: "verify" });
+      } catch (err: any) {
+        log.warn("verify email send failed at signup", {
+          userId: row.id,
+          err: err?.message ?? String(err),
+        });
+      }
     }
     return c.json({ user: userFromRow(row) });
   });
