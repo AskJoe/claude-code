@@ -1314,6 +1314,7 @@ function roleFromEvent(e: ServerEvent): string | null {
     case "session:reset_done":
     case "warn:rate_limited":
     case "warn:budget_exceeded":
+    case "system:notice":
       return "system";
     default:
       return null;

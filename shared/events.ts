@@ -47,6 +47,14 @@ export type ServerEvent =
     }
   | { type: "agent:error"; message: string }
   | {
+      // Server-emitted neutral notice that should land in chat as a system
+      // line (not an error bubble). Used for things like "advisor preset is
+      // selected but the runtime flag is off" or recoverable agent
+      // diagnostics that we don't want to mask but also don't want to scream.
+      type: "system:notice";
+      text: string;
+    }
+  | {
       // Emitted whenever the executor consults the advisor in this turn.
       // Drives the per-conversation cap and the chat hint surface.
       type: "agent:advisor_used";

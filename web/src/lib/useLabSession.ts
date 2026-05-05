@@ -489,12 +489,41 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
       return;
     }
 
-    case "agent:error":
+    case "agent:error": {
+      // The Claude Agent SDK's CLI binary throws this format when the
+      // model's last turn ended with stop_reason=tool_use but the binary
+      // couldn't fulfill the tool call (e.g. the advisor tool isn't yet
+      // wired into the SDK runtime). Surface a friendlier message instead
+      // of the raw diagnostic.
+      const isEdeToolUse =
+        /\[ede_diagnostic\][^]*stop_reason=tool_use/.test(event.message);
+      if (isEdeToolUse) {
+        s.setChat((c) => [
+          ...c,
+          {
+            kind: "system",
+            id: newId(),
+            text:
+              "The model wanted to call a tool the runtime can't handle yet — likely the advisor tool. " +
+              "Try clicking Reset and sending the prompt again. If you're on a +advisor preset, switch " +
+              "to Default or Frugal until advisor support lands in the SDK.",
+          },
+        ]);
+      } else {
+        s.setChat((c) => [
+          ...c,
+          { kind: "error", id: newId(), message: event.message },
+        ]);
+      }
+      s.setStatus("ready");
+      return;
+    }
+
+    case "system:notice":
       s.setChat((c) => [
         ...c,
-        { kind: "error", id: newId(), message: event.message },
+        { kind: "system", id: newId(), text: event.text },
       ]);
-      s.setStatus("ready");
       return;
 
     case "warn:rate_limited":

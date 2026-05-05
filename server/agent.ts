@@ -24,6 +24,18 @@ import type {
 // Beta header centralized here; bump when the API moves out of beta.
 const ADVISOR_BETA_HEADER = "advisor-tool-2026-03-01";
 
+// The Claude Agent SDK 0.2.x's bundled CLI binary doesn't have first-class
+// advisor support — `--advisor-model` isn't an exposed flag and passing
+// {"advisorModel": ...} via --settings lets the model emit advisor
+// `server_tool_use` blocks the binary can't fulfill, causing exit errors of
+// the form "[ede_diagnostic] result_type=user last_content_type=n/a
+// stop_reason=tool_use". Until we verify the SDK ships with a working
+// runtime, the advisor wiring is gated behind LAB_ADVISOR_ENABLED. Set it
+// only after testing on a small project.
+const ADVISOR_RUNTIME_ENABLED =
+  process.env.LAB_ADVISOR_ENABLED === "1" ||
+  process.env.LAB_ADVISOR_ENABLED === "true";
+
 // Map our preset's executor key to the SDK / Anthropic model id.
 function resolveExecutorModelId(e: ExecutorModel): string {
   switch (e) {
@@ -219,7 +231,12 @@ export function startAgent(
   const executorChoice: ExecutorModel = startOpts.executor ?? "sonnet-4.6";
   const executorModelId = resolveExecutorModelId(executorChoice);
   const advisorModelId = resolveAdvisorModelId(startOpts.advisor ?? null);
-  const advisorActive = advisorModelId !== null;
+  // Two layers: the user picked a +advisor preset AND the env flag opts in.
+  // When the user picked it but the runtime is gated, we'll surface a
+  // system message after session start so they know the executor is still
+  // doing the work alone.
+  const advisorRequested = advisorModelId !== null;
+  const advisorActive = advisorRequested && ADVISOR_RUNTIME_ENABLED;
 
   // Prepend the recommended advisor blocks when advisor is enabled. Order:
   // conciseness → timing → treatment → user prefix (already in composedSystemPrompt) → baked.
@@ -273,6 +290,23 @@ export function startAgent(
   }
 
   const stream = query({ prompt: inbox.iterable, options });
+
+  // If the user picked a +advisor preset but the runtime is gated, surface
+  // a one-line system note so they understand why the cost meter won't
+  // split executor/advisor and why the chat behaves like the non-advisor
+  // sibling preset.
+  if (advisorRequested && !advisorActive) {
+    queueMicrotask(() => {
+      emit({
+        type: "system:notice",
+        text:
+          "Advisor preset is selected but disabled at the server level " +
+          "(LAB_ADVISOR_ENABLED is unset). The executor model will run alone " +
+          "this session. Switch to a non-advisor preset (Frugal / Default / Maximum) " +
+          "to remove this notice.",
+      });
+    });
+  }
 
   // Pump SDK messages onto the WebSocket as they arrive.
   (async () => {
