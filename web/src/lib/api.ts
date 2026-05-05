@@ -251,11 +251,6 @@ export const api = {
   deleteProject: (id: number) =>
     request<{ ok: true }>(`/api/projects/${id}`, { method: "DELETE" }),
 
-  githubStatus: () => request<GithubStatus>("/api/github/status"),
-
-  githubDisconnect: () =>
-    request<{ ok: true }>("/api/github/disconnect", { method: "POST" }),
-
   renderPrepareDeploy: (projectId: number) =>
     request<{ ok: true; deployUrl: string; predictedSiteUrl: string }>(
       `/api/projects/${projectId}/render/prepare-deploy`,
