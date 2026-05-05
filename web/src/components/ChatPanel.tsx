@@ -69,6 +69,7 @@ type Props = {
   onSetTheme?: (t: "light" | "dark" | "system") => void;
   onShowShortcuts?: () => void;
   onShowHistory?: () => void;
+  onShowSettings?: () => void;
   onSystemMessage?: (text: string) => void;
   /** Optional initial draft text. When this prop changes (welcome modal click,
    *  sample-prompt button, future command palette), it gets dropped into the
@@ -104,6 +105,7 @@ export function ChatPanel({
   onSetTheme,
   onShowShortcuts,
   onShowHistory,
+  onShowSettings,
   onSystemMessage,
   prefilledPrompt,
   prefilledNonce,
@@ -428,6 +430,10 @@ export function ChatPanel({
         if (onShowHistory) onShowHistory();
         else notify("History panel — not yet wired");
       },
+      showSettings: () => {
+        if (onShowSettings) onShowSettings();
+        else notify("Settings — not yet wired");
+      },
       notify,
     }),
     [
@@ -436,6 +442,7 @@ export function ChatPanel({
       onSetTheme,
       onShowShortcuts,
       onShowHistory,
+      onShowSettings,
       copyLastAssistant,
       exportTranscript,
       notify,

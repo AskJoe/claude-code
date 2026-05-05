@@ -13,6 +13,7 @@ import { EditModeToggle } from "./components/EditModeToggle.tsx";
 import { HistoryPanel } from "./components/HistoryPanel.tsx";
 import { ThemeToggle } from "./components/ThemeToggle.tsx";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay.tsx";
+import { SettingsPanel } from "./components/SettingsPanel.tsx";
 import { Welcome, shouldShowWelcome } from "./components/Welcome.tsx";
 import { useLabSession, type LabMode } from "./lib/useLabSession.ts";
 import { useTheme } from "./lib/useTheme.ts";
@@ -60,6 +61,7 @@ export function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [route, setRoute] = useState<Route>(() => parseHash());
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     api
@@ -90,12 +92,41 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // ⌘, opens settings. Skip when an input/textarea is focused so the user
+  // can still type a literal comma. Welcome modal takes priority — bail
+  // when the onboarded flag is unset (Welcome would be open).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey)) return;
+      if (e.key !== ",") return;
+      const tag = (e.target as HTMLElement | null)?.tagName ?? "";
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      try {
+        if (localStorage.getItem("lab.onboarded.v1") === null) return;
+      } catch {}
+      e.preventDefault();
+      setSettingsOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const overlay = (
     <ShortcutsOverlay
       open={shortcutsOpen}
       onClose={() => setShortcutsOpen(false)}
     />
   );
+
+  const settingsModal =
+    me?.user ? (
+      <SettingsPanel
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        me={me}
+        onMeUpdated={setMe}
+      />
+    ) : null;
 
   if (me === null) return <div className="boot-loader">Loading…</div>;
 
@@ -118,6 +149,7 @@ export function App() {
           onOpenAdminProject={(pid) => navigate(`/admin/p/${pid}`)}
         />
         {overlay}
+        {settingsModal}
       </>
     );
   }
@@ -130,6 +162,7 @@ export function App() {
           onExit={() => navigate("/admin/users")}
         />
         {overlay}
+        {settingsModal}
       </>
     );
   }
@@ -153,6 +186,7 @@ export function App() {
           }}
         />
         {overlay}
+        {settingsModal}
       </>
     );
   }
@@ -165,8 +199,10 @@ export function App() {
         onExit={() => navigate("/")}
         onOpenAdmin={() => navigate("/admin/users")}
         onShowShortcuts={() => setShortcutsOpen(true)}
+        onShowSettings={() => setSettingsOpen(true)}
       />
       {overlay}
+      {settingsModal}
     </>
   );
 }
@@ -179,12 +215,14 @@ function Lab({
   onExit,
   onOpenAdmin,
   onShowShortcuts,
+  onShowSettings,
 }: {
   projectId: number;
   isAdmin: boolean;
   onExit: () => void;
   onOpenAdmin: () => void;
   onShowShortcuts: () => void;
+  onShowSettings: () => void;
 }) {
   const theme = useTheme();
   const [agentMode, setAgentMode] = useState<LabMode>(() => loadAgentMode(projectId));
@@ -364,6 +402,14 @@ function Lab({
             resolved={theme.resolved}
             onCycle={theme.cycle}
           />
+          <button
+            type="button"
+            className="topbar-admin-link"
+            onClick={onShowSettings}
+            title="Settings (⌘,)"
+          >
+            ⚙ Settings
+          </button>
           {isAdmin && (
             <button
               type="button"
@@ -475,6 +521,7 @@ function Lab({
             onSetTheme={theme.setChoice}
             onShowShortcuts={onShowShortcuts}
             onShowHistory={() => setHistoryOpen(true)}
+            onShowSettings={onShowSettings}
             prefilledPrompt={prefilled?.text}
             prefilledNonce={prefilled?.nonce}
           />

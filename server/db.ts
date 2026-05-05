@@ -43,6 +43,9 @@ export type UserRow = {
   is_admin: number;             // SQLite stores booleans as 0/1
   disabled: number;
   budget_override_usd: number | null;
+  /** Optional user-supplied system prompt prefix. Prepended to the agent's
+   * baked prompt at session start. Capped at 4000 chars at write time. */
+  system_prompt: string | null;
 };
 
 export type GithubConnectionRow = {
@@ -413,6 +416,20 @@ export function setUserPasswordHash(id: number, passwordHash: string): void {
     passwordHash,
     id
   );
+}
+
+/** User-facing settings update for display name. Separate from admin's
+ * `updateUser` so the user surface has a narrow, well-defined codepath. */
+export function setUserDisplayName(id: number, displayName: string | null): void {
+  db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(
+    displayName,
+    id
+  );
+}
+
+/** Save the user's optional system-prompt prefix. Pass null to clear. */
+export function setUserSystemPrompt(id: number, value: string | null): void {
+  db.prepare("UPDATE users SET system_prompt = ? WHERE id = ?").run(value, id);
 }
 
 const sDeleteUser = db.prepare<[number], void>("DELETE FROM users WHERE id = ?");

@@ -15,7 +15,15 @@
 import { sign, verify } from "hono/jwt";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import type { Context, Hono, MiddlewareHandler } from "hono";
-import { createUser, getUserByEmail, getUserById, touchUserLogin, type UserRow } from "./db.ts";
+import {
+  createUser,
+  getUserByEmail,
+  getUserById,
+  setUserDisplayName,
+  setUserSystemPrompt,
+  touchUserLogin,
+  type UserRow,
+} from "./db.ts";
 import { hashPassword, verifyPassword } from "./passwords.ts";
 import { log } from "./log.ts";
 
@@ -153,5 +161,41 @@ export function registerAuthRoutes(app: Hono): void {
   app.post("/api/auth/logout", (c) => {
     deleteCookie(c, COOKIE);
     return c.json({ ok: true });
+  });
+
+  // PATCH the signed-in user's display name. Returns the updated user shape so
+  // the SPA can swap state without an extra `/api/me` round-trip.
+  app.patch("/api/me/profile", authMiddleware, async (c) => {
+    const me = c.get("user") as AuthUser;
+    const body = await c.req.json().catch(() => ({}));
+    if (typeof body.displayName === "string") {
+      const trimmed = body.displayName.trim().slice(0, 80);
+      setUserDisplayName(me.id, trimmed || null);
+    }
+    const row = getUserById(me.id);
+    if (!row) return c.json({ error: "user not found" }, 500);
+    return c.json({ user: userFromRow(row) });
+  });
+
+  // GET the user's saved system-prompt prefix so the Settings panel can
+  // populate the textarea on open.
+  app.get("/api/me/system-prompt", authMiddleware, (c) => {
+    const me = c.get("user") as AuthUser;
+    const row = getUserById(me.id);
+    if (!row) return c.json({ error: "user not found" }, 500);
+    return c.json({ systemPrompt: row.system_prompt ?? null });
+  });
+
+  // PATCH the system prompt. Cap at 4000 chars at write time. Empty string
+  // clears the prefix (stored as NULL).
+  app.patch("/api/me/system-prompt", authMiddleware, async (c) => {
+    const me = c.get("user") as AuthUser;
+    const body = await c.req.json().catch(() => ({}));
+    let value: string | null = null;
+    if (typeof body.systemPrompt === "string") {
+      value = body.systemPrompt.trim().slice(0, 4000) || null;
+    }
+    setUserSystemPrompt(me.id, value);
+    return c.json({ ok: true, systemPrompt: value });
   });
 }

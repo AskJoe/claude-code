@@ -154,6 +154,25 @@ export const api = {
   logout: () =>
     request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
 
+  // Settings panel — profile + system prompt.
+  updateProfile: ({ displayName }: { displayName: string }) =>
+    request<{ user: Me["user"] }>("/api/me/profile", {
+      method: "PATCH",
+      body: JSON.stringify({ displayName }),
+    }),
+
+  getSystemPrompt: () =>
+    request<{ systemPrompt: string | null }>("/api/me/system-prompt"),
+
+  updateSystemPrompt: ({ systemPrompt }: { systemPrompt: string | null }) =>
+    request<{ ok: true; systemPrompt: string | null }>(
+      "/api/me/system-prompt",
+      {
+        method: "PATCH",
+        body: JSON.stringify({ systemPrompt }),
+      }
+    ),
+
   listProjects: () => request<{ projects: ProjectSummary[] }>("/api/projects"),
 
   createProject: (displayName: string) =>

@@ -18,6 +18,7 @@ export type CommandContext = {
   showShortcuts: () => void;
   copyLastAssistant: () => void;
   showHistory: () => void;
+  showSettings: () => void;
   /** Used by stub commands: "Not yet wired" notice surfaces to the user. */
   notify: (text: string) => void;
 };
@@ -60,4 +61,5 @@ export const COMMANDS: Command[] = [
 
   // Help
   { id: "help", label: "Show keyboard shortcuts", hint: "?", group: "Help", action: (c) => c.showShortcuts() },
+  { id: "open-settings", label: "Open settings", hint: "⌘,", group: "Help", action: (c) => c.showSettings() },
 ];

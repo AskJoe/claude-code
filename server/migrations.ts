@@ -103,6 +103,13 @@ const MIGRATIONS: Migration[] = [
       ALTER TABLE projects ADD COLUMN render_yaml_committed_at TEXT;
     `,
   },
+  {
+    id: 4,
+    name: "user-system-prompt",
+    sql: `
+      ALTER TABLE users ADD COLUMN system_prompt TEXT;
+    `,
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

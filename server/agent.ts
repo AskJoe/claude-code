@@ -128,10 +128,16 @@ export function startAgent(
   // Model: lab-wide default (no per-user override yet).
   const labSettings = getSettings();
   let budget = labSettings.defaultBudgetUsd;
+  // Compose the system prompt: user's optional prefix → our baked prompt.
+  let composedSystemPrompt = SYSTEM_PROMPT;
   if (startOpts.userId) {
     const userRow = getUserById(startOpts.userId);
     if (userRow?.budget_override_usd != null) {
       budget = userRow.budget_override_usd;
+    }
+    const userPrefix = (userRow?.system_prompt ?? "").trim();
+    if (userPrefix) {
+      composedSystemPrompt = `${userPrefix}\n\n---\n\n${SYSTEM_PROMPT}`;
     }
   }
 
@@ -145,7 +151,7 @@ export function startAgent(
     // tool-use conventions, code-style heuristics) and APPEND our Astro-specific
     // guidance on top. Replacing the preset entirely was the single largest
     // quality gap vs. the real CLI.
-    systemPrompt: { type: "preset", preset: "claude_code", append: SYSTEM_PROMPT },
+    systemPrompt: { type: "preset", preset: "claude_code", append: composedSystemPrompt },
     // No `allowedTools` — fall back to the SDK's full Claude Code default
     // (Read/Write/Edit/Bash + Glob/Grep + WebSearch/WebFetch + TodoWrite +
     // Task + NotebookEdit + background-process tools).
