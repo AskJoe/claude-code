@@ -1,4 +1,5 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
   useMemo,
@@ -8,12 +9,30 @@ import {
   type DragEvent,
   type FormEvent,
 } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { renderMarkdown } from "../lib/markdown.tsx";
 import { exportSessionUrl } from "../lib/api.ts";
 import type { ChatItem, LabState } from "../lib/useLabSession.ts";
+import type { ModelKey } from "../../../shared/events.ts";
 import { ToolCallBlock } from "./ToolCallBlock.tsx";
 import { CommandPalette } from "./CommandPalette.tsx";
 import { COMMANDS, type Command, type CommandContext } from "../lib/commands.ts";
+
+const VIRTUAL_THRESHOLD = 50;
+const MODEL_LABELS: Record<ModelKey, string> = {
+  "sonnet-4.6": "Sonnet 4.6",
+  "opus-4.7": "Opus 4.7",
+  haiku: "Haiku",
+};
+const MODEL_KEYS: ModelKey[] = ["sonnet-4.6", "opus-4.7", "haiku"];
+
+function loadModelPreference(): ModelKey {
+  try {
+    const v = localStorage.getItem("lab.modelPreference");
+    if (v === "sonnet-4.6" || v === "opus-4.7" || v === "haiku") return v;
+  } catch {}
+  return "sonnet-4.6";
+}
 
 type QueuedUpload = {
   id: string;
@@ -23,6 +42,10 @@ type QueuedUpload = {
   error?: string;
   /** object URL for image preview chip; revoked when chip leaves the queue */
   previewUrl?: string;
+  /** server-side thumb URL once the upload returns. Prefers the WebP variant
+   * the server generates for PNG/JPEG; falls back to the original URL.
+   * Replaces previewUrl in the chip thumb once available. */
+  serverThumbUrl?: string;
 };
 
 type Props = {
@@ -32,9 +55,15 @@ type Props = {
   budgetUsd: number;
   projectId: number;
   sessionId: string | null;
+  /** Per-minute send cap from server's `session:ready`. The pill in the
+   *  header surfaces only when the user is approaching this limit. */
+  rateLimitPerMinute?: number;
   onSend: (text: string) => void;
   onAbort: () => void;
   onReset: () => void;
+  /** Pushes the user's chosen model to the server (no-op for now;
+   *  applies on next session). When omitted, the model pill is hidden. */
+  onSetModel?: (m: ModelKey) => void;
   /** Optional handlers wired by App.tsx for the command palette. */
   onSetRightView?: (v: "preview" | "code") => void;
   onSetTheme?: (t: "light" | "dark" | "system") => void;
@@ -66,9 +95,11 @@ export function ChatPanel({
   budgetUsd,
   projectId,
   sessionId,
+  rateLimitPerMinute,
   onSend,
   onAbort,
   onReset,
+  onSetModel,
   onSetRightView,
   onSetTheme,
   onShowShortcuts,
@@ -81,11 +112,57 @@ export function ChatPanel({
   const [uploads, setUploads] = useState<QueuedUpload[]>([]);
   const [dragOver, setDragOver] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [modelChoice, setModelChoice] = useState<ModelKey>(() => loadModelPreference());
+  const [modelPopoverOpen, setModelPopoverOpen] = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [rateUsage, setRateUsage] = useState(0);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelPillRef = useRef<HTMLDivElement>(null);
   // Counts nested drag-enter/leave so child elements don't flicker the overlay.
   const dragCounter = useRef(0);
+  // Sliding-window timestamps of recent user sends (last 60s).
+  const sendTimestampsRef = useRef<number[]>([]);
+
+  // Reset banner dismissed state when sessionId changes (new session).
+  useEffect(() => {
+    setBannerDismissed(false);
+  }, [sessionId]);
+
+  // Recalculate the rate-usage pill every 2s — prune old timestamps and
+  // surface the current count. Cheap; only ticks while ChatPanel is mounted.
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      const cutoff = Date.now() - 60_000;
+      sendTimestampsRef.current = sendTimestampsRef.current.filter(
+        (t) => t >= cutoff
+      );
+      setRateUsage(sendTimestampsRef.current.length);
+    }, 2_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // Click-outside closes the model popover.
+  useEffect(() => {
+    if (!modelPopoverOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const el = modelPillRef.current;
+      if (el && !el.contains(e.target as Node)) setModelPopoverOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [modelPopoverOpen]);
+
+  // Virtualize once the transcript gets long. Below 50 items the plain map is
+  // faster (no measurement overhead) and avoids any visual jitter.
+  const useVirtual = chat.length >= VIRTUAL_THRESHOLD;
+  const virtualizer = useVirtualizer({
+    count: chat.length,
+    getScrollElement: () => scrollerRef.current,
+    estimateSize: () => 80,
+    overscan: 8,
+  });
 
   // Track total visible text length so streamed chunks (which don't change
   // chat.length) still trigger an autoscroll.
@@ -95,9 +172,15 @@ export function ChatPanel({
   }, 0);
 
   useEffect(() => {
+    if (useVirtual) {
+      if (chat.length > 0) {
+        virtualizer.scrollToIndex(chat.length - 1, { align: "end" });
+      }
+      return;
+    }
     const el = scrollerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [chat.length, chatBodyLen]);
+  }, [chat.length, chatBodyLen, useVirtual, virtualizer]);
 
   // Whenever the parent passes a new prefilled prompt (welcome modal click,
   // sample-prompt button, future command palette), drop it into the draft and
@@ -161,6 +244,7 @@ export function ChatPanel({
         text = text ? `${header}\n\n${text}` : header;
       }
       if (!text) return;
+      sendTimestampsRef.current.push(Date.now());
       onSend(text);
       setDraft("");
       uploads.forEach((u) => u.previewUrl && URL.revokeObjectURL(u.previewUrl));
@@ -192,11 +276,21 @@ export function ChatPanel({
           const body = await res.json().catch(() => ({}));
           throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
         }
-        const json = (await res.json()) as { path: string };
+        const json = (await res.json()) as {
+          path: string;
+          url: string;
+          variant?: { webpPath: string; webpUrl: string };
+        };
+        const serverThumbUrl = json.variant?.webpUrl ?? json.url;
         setUploads((u) =>
           u.map((x) =>
             x.id === tmpId
-              ? { ...x, uploading: false, uploadedPath: json.path }
+              ? {
+                  ...x,
+                  uploading: false,
+                  uploadedPath: json.path,
+                  serverThumbUrl,
+                }
               : x
           )
         );
@@ -377,12 +471,56 @@ export function ChatPanel({
     return () => window.removeEventListener("keydown", onKey);
   }, [status, onAbort]);
 
+  // Threshold banner — visible only between 80% and 99% of budget. The hard
+  // stop at 100% is already handled by status === "exhausted" elsewhere.
+  const budgetPct =
+    budgetUsd > 0 ? cumulativeCostUsd / budgetUsd : 0;
+  const showBudgetBanner =
+    !bannerDismissed &&
+    status !== "exhausted" &&
+    budgetPct >= 0.8 &&
+    budgetPct < 1.0;
+
+  // Rate pill — surface when within 80% of the per-minute send cap, hide
+  // otherwise. When at the cap, paint with the amber-bg fill.
+  const rateCap = rateLimitPerMinute ?? 0;
+  const showRate = rateCap > 0 && rateUsage / rateCap >= 0.8;
+
   return (
     <div className="chat">
       <div className="chat-header">
         <span className="chat-title">Chat</span>
         <div className="chat-header-right">
+          {showRate && (
+            <span
+              className={`rate-pill ${rateUsage >= rateCap ? "rate-pill-cap" : ""}`}
+              title="User messages sent in the last 60 seconds"
+            >
+              {rateUsage}/{rateCap} msgs/min
+            </span>
+          )}
           <CostMeter spent={cumulativeCostUsd} budget={budgetUsd} />
+          {onSetModel && (
+            <ModelPill
+              ref={modelPillRef}
+              choice={modelChoice}
+              open={modelPopoverOpen}
+              onToggle={() => setModelPopoverOpen((o) => !o)}
+              onPick={(m) => {
+                setModelChoice(m);
+                try {
+                  localStorage.setItem("lab.modelPreference", m);
+                } catch {}
+                onSetModel(m);
+                setModelPopoverOpen(false);
+                if (onSystemMessage) {
+                  onSystemMessage(
+                    `Model preference set to ${MODEL_LABELS[m]}. Applies on next session — click Reset to apply now.`
+                  );
+                }
+              }}
+            />
+          )}
           {status === "thinking" ? (
             <button
               type="button"
@@ -407,6 +545,26 @@ export function ChatPanel({
         </div>
       </div>
 
+      {showBudgetBanner && (
+        <div className="budget-banner" role="status">
+          <span className="budget-banner-icon" aria-hidden>
+            ⚠
+          </span>
+          <span className="budget-banner-text">
+            You've used {Math.round(budgetPct * 100)}% of today's budget.
+            Consider switching to Haiku or pausing.
+          </span>
+          <button
+            type="button"
+            className="budget-banner-dismiss"
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div className="chat-scroll" ref={scrollerRef}>
         {chat.length === 0 && (
           <ChatEmpty
@@ -422,9 +580,39 @@ export function ChatPanel({
             }}
           />
         )}
-        {chat.map((item) => (
-          <ChatRow key={item.id} item={item} />
-        ))}
+        {useVirtual ? (
+          <div
+            className="chat-virtual-spacer"
+            style={{
+              height: virtualizer.getTotalSize(),
+              position: "relative",
+              width: "100%",
+            }}
+          >
+            {virtualizer.getVirtualItems().map((vi) => {
+              const item = chat[vi.index];
+              if (!item) return null;
+              return (
+                <div
+                  key={item.id}
+                  data-vindex={vi.index}
+                  ref={virtualizer.measureElement}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    transform: `translateY(${vi.start}px)`,
+                  }}
+                >
+                  <ChatRow item={item} />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          chat.map((item) => <ChatRow key={item.id} item={item} />)
+        )}
       </div>
 
       <form
@@ -536,8 +724,12 @@ function UploadChip({
       : "upload-chip ok";
   return (
     <div className={stateClass} title={u.error ?? u.file.name}>
-      {isImage && u.previewUrl ? (
-        <img className="upload-thumb" src={u.previewUrl} alt="" />
+      {isImage && (u.serverThumbUrl || u.previewUrl) ? (
+        <img
+          className="upload-thumb"
+          src={u.serverThumbUrl ?? u.previewUrl}
+          alt=""
+        />
       ) : (
         <span className="upload-icon" aria-hidden>📎</span>
       )}
@@ -640,14 +832,67 @@ function ChatRow({ item }: { item: ChatItem }) {
 
 function CostMeter({ spent, budget }: { spent: number; budget: number }) {
   const pct = Math.min(100, Math.round((spent / Math.max(budget, 0.01)) * 100));
-  const className =
-    pct >= 90 ? "cost-meter danger" : pct >= 60 ? "cost-meter warn" : "cost-meter";
+  const tone = pct >= 90 ? "danger" : pct >= 60 ? "warn" : "ok";
+  const tooltip =
+    `Session cost: $${spent.toFixed(4)} of $${budget.toFixed(2)} budget. ` +
+    `Cumulative spend across all turns this session, divided by the project budget.`;
   return (
-    <span className={className} title={`session cost: $${spent.toFixed(4)} of $${budget.toFixed(2)} budget`}>
-      ${spent.toFixed(2)} / ${budget.toFixed(2)}
-    </span>
+    <div className="cost-meter-wrap" title={tooltip}>
+      <span className={`cost-meter cost-meter-${tone}`}>
+        ${spent.toFixed(2)} / ${budget.toFixed(2)}
+      </span>
+      <div className="cost-bar" aria-hidden>
+        <div
+          className={`cost-bar-fill cost-bar-fill-${tone}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
   );
 }
+
+const ModelPill = forwardRef<
+  HTMLDivElement,
+  {
+    choice: ModelKey;
+    open: boolean;
+    onToggle: () => void;
+    onPick: (m: ModelKey) => void;
+  }
+>(function ModelPill({ choice, open, onToggle, onPick }, ref) {
+  return (
+    <div className="model-pill-wrap" ref={ref}>
+      <button
+        type="button"
+        className="model-pill"
+        onClick={onToggle}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Change model preference (applies on next session)"
+      >
+        <span>{MODEL_LABELS[choice]}</span>
+        <span className="caret" aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="model-popover" role="listbox">
+          {MODEL_KEYS.map((m) => (
+            <label key={m} className="model-option">
+              <input
+                type="radio"
+                name="model-choice"
+                checked={m === choice}
+                onChange={() => onPick(m)}
+              />
+              <span>{MODEL_LABELS[m]}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+});
 
 function StatusPill({ status }: { status: LabState["status"] }) {
   const labels: Record<LabState["status"], string> = {

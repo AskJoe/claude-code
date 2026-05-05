@@ -3543,3 +3543,117 @@ textarea {
   font-size: 11px;
   padding: 6px 10px;
 }
+
+/* ── Phase 5/12/13 additions ────────────────────────────────────────────── */
+
+/* Model picker pill */
+.model-pill-wrap { position: relative; display: inline-flex; }
+.model-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-3);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.model-pill:hover { border-color: var(--accent); color: var(--text); }
+.model-pill .caret { font-size: 9px; opacity: .6; }
+.model-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  min-width: 180px;
+  padding: 4px;
+}
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.model-option:hover { background: var(--bg-2); }
+.model-option input { accent-color: var(--accent); }
+
+/* Cost meter + progress bar */
+.cost-meter-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: stretch;
+  min-width: 100px;
+}
+.cost-bar {
+  width: 100%;
+  height: 3px;
+  background: var(--bg-3);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.cost-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 300ms ease, background 300ms ease;
+}
+.cost-bar-fill-ok { background: var(--green); }
+.cost-bar-fill-warn { background: var(--amber); }
+.cost-bar-fill-danger { background: var(--red); }
+
+/* Threshold warning banner */
+.budget-banner {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-left: 4px solid var(--amber);
+  font-size: 13px;
+}
+.budget-banner-icon { font-size: 14px; }
+.budget-banner-text { flex: 1; }
+.budget-banner-dismiss {
+  background: transparent;
+  border: 0;
+  color: var(--amber);
+  font-size: 14px;
+  padding: 0 4px;
+  cursor: pointer;
+  opacity: .7;
+}
+.budget-banner-dismiss:hover { opacity: 1; }
+
+/* Rate-limit pill */
+.rate-pill {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--amber);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--amber);
+  background: var(--bg-3);
+  text-transform: none;
+  letter-spacing: 0;
+}
+.rate-pill-cap {
+  background: var(--amber-bg);
+}
+
+/* Virtual scroll spacer (no visual; pure layout) */
+.chat-virtual-spacer { /* sized inline */ }

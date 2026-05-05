@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ClientCommand,
   FileNode,
+  ModelKey,
   ServerEvent,
 } from "../../../shared/events.ts";
 
@@ -90,6 +91,10 @@ export type LabState = {
   send: (text: string) => void;
   abort: () => void;
   reset: () => void;
+  /** Persist the user's model preference and notify the server. The current
+   * agent (already running) keeps its initial model; the new one applies on
+   * the next session — i.e. after a Reset. */
+  setModelPreference: (m: ModelKey) => void;
 };
 
 let counter = 0;
@@ -203,6 +208,13 @@ export function useLabSession(
     sendCommand({ type: "session:reset" });
   }, [sendCommand]);
 
+  const setModelPreference = useCallback(
+    (m: ModelKey) => {
+      sendCommand({ type: "session:set_model", model: m });
+    },
+    [sendCommand]
+  );
+
   return {
     status,
     sessionId,
@@ -218,6 +230,7 @@ export function useLabSession(
     send,
     abort,
     reset,
+    setModelPreference,
   };
 }
 

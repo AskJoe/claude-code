@@ -466,9 +466,11 @@ function Lab({
             budgetUsd={lab.budgetUsd}
             projectId={projectId}
             sessionId={lab.sessionId}
+            rateLimitPerMinute={lab.rateLimit.perMinute}
             onSend={lab.send}
             onAbort={lab.abort}
             onReset={lab.reset}
+            onSetModel={lab.setModelPreference}
             onSetRightView={setRightView}
             onSetTheme={theme.setChoice}
             onShowShortcuts={onShowShortcuts}

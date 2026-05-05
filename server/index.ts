@@ -649,12 +649,22 @@ app.get("/preview/:projectId/*", async (c) => {
     });
   }
 
+  // Long-cache uploaded images / PDFs — they're content-addressed (random
+  // 8-char prefix) so the URL is stable for a given file. Scope strictly to
+  // `/preview/<id>/uploads/...` so iframe HTML / JS / CSS reloads still see
+  // fresh content after a build.
+  const isUpload = wildcard.startsWith("uploads/");
+  const cacheableExts = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".pdf"]);
+  const longCache = !raw && isUpload && cacheableExts.has(ext);
+
   return new Response(buf, {
     headers: {
       "Content-Type": raw
         ? "text/plain; charset=utf-8"
         : (MIME[ext] ?? "text/plain; charset=utf-8"),
-      "Cache-Control": "no-store",
+      "Cache-Control": longCache
+        ? "public, max-age=31536000, immutable"
+        : "no-store",
       "X-Frame-Options": "SAMEORIGIN",
     },
   });
@@ -949,6 +959,19 @@ app.get(
             await teardownSession();
             await initSession();
             emit({ type: "session:reset_done" });
+            return;
+          }
+          case "session:set_model": {
+            // Forward-compat. The Agent SDK bakes `model` into Options at
+            // session start (server/agent.ts) and the running query() can't
+            // be re-modeled mid-flight. The client persists the preference
+            // to localStorage and surfaces a system message asking the user
+            // to Reset to apply. A future phase can swap teardown/init
+            // here to apply immediately.
+            log.info("model preference received", {
+              projectId: project?.id,
+              model: cmd.model,
+            });
             return;
           }
         }

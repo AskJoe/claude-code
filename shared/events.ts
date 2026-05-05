@@ -69,9 +69,12 @@ export type ServerEvent =
     };
 
 /** Client → server */
+export type ModelKey = "sonnet-4.6" | "opus-4.7" | "haiku";
+
 export type ClientCommand =
   | { type: "user:message"; text: string }
   | { type: "agent:abort" }
-  | { type: "session:reset" };
+  | { type: "session:reset" }
+  | { type: "session:set_model"; model: ModelKey };
 
 export const WS_PATH = "/ws";

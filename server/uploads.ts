@@ -22,6 +22,7 @@ import type { Hono } from "hono";
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { customAlphabet } from "nanoid";
+import sharp from "sharp";
 
 import { authMiddleware } from "./auth.ts";
 import { getProjectFor, projectDir as resolveProjectDir } from "./projects.ts";
@@ -166,12 +167,40 @@ export function mountUploads(app: Hono): void {
       mime,
     });
 
+    // Generate a WebP variant for PNG/JPEG only. WebP originals already are;
+    // GIF would lose animation frames; SVG is vector. Failure is non-fatal —
+    // the original is still served and we just skip the variant in the
+    // response.
+    let variant: { webpPath: string; webpUrl: string } | undefined;
+    const wantsWebp = mime === "image/png" || mime === "image/jpeg";
+    if (wantsWebp) {
+      const dotIdx = safeName.lastIndexOf(".");
+      const variantSafeName =
+        dotIdx > 0 ? `${safeName.slice(0, dotIdx)}.webp` : `${safeName}.webp`;
+      const variantAbs = join(uploadsDir, variantSafeName);
+      try {
+        const buf = await fileBlob.arrayBuffer();
+        await sharp(Buffer.from(buf)).webp({ quality: 82 }).toFile(variantAbs);
+        variant = {
+          webpPath: `public/uploads/${variantSafeName}`,
+          webpUrl: `/preview/${id}/uploads/${variantSafeName}`,
+        };
+      } catch (err: any) {
+        log.warn("upload variant generation failed", {
+          projectId: id,
+          safeName,
+          err: err?.message ?? String(err),
+        });
+      }
+    }
+
     return c.json({
       path: `public/uploads/${safeName}`,
       url: `/preview/${id}/uploads/${safeName}`,
       size,
       mime,
       originalName,
+      ...(variant ? { variant } : {}),
     });
   });
 }
