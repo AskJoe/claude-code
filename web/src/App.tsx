@@ -688,7 +688,11 @@ function Lab({
         <section className="pane pane-right">
           <div className="pane-right-main">
             {rightView === "preview" ? (
-              <PreviewPane previewBase={lab.previewBase} reloadKey={reloadKey} />
+              <PreviewPane
+                previewBase={lab.previewBase}
+                reloadKey={reloadKey}
+                files={lab.files}
+              />
             ) : (
               <CodeView
                 files={lab.files}

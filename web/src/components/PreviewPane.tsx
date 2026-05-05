@@ -1,10 +1,81 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FileNode } from "../../../shared/events.ts";
 
 type Props = {
   previewBase: string | null;
   /** Changes to force the iframe to reload (e.g. on each build transition). */
   reloadKey?: number | string;
+  /** Live file tree from useLabSession — used to derive Astro routes for
+   *  the page picker dropdown. */
+  files?: FileNode[];
 };
+
+type PageOption = {
+  /** Path appended after previewBase. "" = index, "/about" = about page. */
+  routePath: string;
+  /** Human label for the dropdown row. */
+  label: string;
+  /** Source file path under the project. Just for tooltips / debugging. */
+  source: string;
+};
+
+/** Walk the file tree and pick out src/pages/**\/*.{astro,md,mdx} as routes.
+ *  Dynamic routes (filenames starting with `[`) are skipped — they need
+ *  params at render time and don't preview clean. */
+function derivePages(files: FileNode[]): PageOption[] {
+  const out: PageOption[] = [];
+  const PAGE_EXTS = new Set([".astro", ".md", ".mdx", ".html"]);
+
+  function walk(nodes: FileNode[]) {
+    for (const n of nodes) {
+      if (n.type === "dir") {
+        if (n.children) walk(n.children);
+        continue;
+      }
+      const path = n.path;
+      if (!path.startsWith("src/pages/")) continue;
+      const rel = path.slice("src/pages/".length);
+      if (rel.includes("[")) continue; // dynamic routes — skip
+      const dotIdx = rel.lastIndexOf(".");
+      if (dotIdx < 0) continue;
+      const ext = rel.slice(dotIdx).toLowerCase();
+      if (!PAGE_EXTS.has(ext)) continue;
+      const stem = rel.slice(0, dotIdx); // "about", "blog/post", "index"
+      // Index files map to their parent path. blog/index → blog, top-level
+      // index → "" (the home page).
+      let routePath: string;
+      let label: string;
+      if (stem === "index") {
+        routePath = "";
+        label = "Home";
+      } else if (stem.endsWith("/index")) {
+        routePath = "/" + stem.slice(0, -"/index".length);
+        label = routePath;
+      } else {
+        routePath = "/" + stem;
+        label = routePath;
+      }
+      out.push({ routePath, label, source: path });
+    }
+  }
+  walk(files);
+
+  // Sort: home first, then alphabetical by route.
+  out.sort((a, b) => {
+    if (a.routePath === "" && b.routePath !== "") return -1;
+    if (b.routePath === "" && a.routePath !== "") return 1;
+    return a.routePath < b.routePath ? -1 : a.routePath > b.routePath ? 1 : 0;
+  });
+
+  // Dedupe by routePath — Astro lets you have both .astro and .md for the
+  // same route, but only one builds. First one wins.
+  const seen = new Set<string>();
+  return out.filter((p) => {
+    if (seen.has(p.routePath)) return false;
+    seen.add(p.routePath);
+    return true;
+  });
+}
 
 type ConsoleLevel = "log" | "info" | "warn" | "error" | "debug";
 
@@ -28,12 +99,30 @@ const CONSOLE_MAX = 400;
  * iframe via the `lab:console` postMessage protocol injected by
  * `preview-editor-runtime.ts`.
  */
-export function PreviewPane({ previewBase, reloadKey = "0" }: Props) {
+export function PreviewPane({
+  previewBase,
+  reloadKey = "0",
+  files,
+}: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [bump, setBump] = useState(0);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [logs, setLogs] = useState<ConsoleLine[]>([]);
   const idRef = useRef(0);
+
+  // Derive available routes from the file tree. Memoize so we don't
+  // recompute on every render — only when the file list changes.
+  const pages = useMemo(() => derivePages(files ?? []), [files]);
+
+  // Currently-active route. Defaults to "" (Home / index). Sticks to user's
+  // pick across builds; if the picked page disappears (file deleted), fall
+  // back to home.
+  const [currentRoute, setCurrentRoute] = useState<string>("");
+  useEffect(() => {
+    if (pages.length === 0) return;
+    const stillExists = pages.some((p) => p.routePath === currentRoute);
+    if (!stillExists) setCurrentRoute("");
+  }, [pages, currentRoute]);
 
   // Listen for `lab:console` messages from the preview iframe. Other
   // message types (lab:edit-mode-toggle, lab:edit-text) are handled by the
@@ -78,7 +167,15 @@ export function PreviewPane({ previewBase, reloadKey = "0" }: Props) {
   if (!previewBase) {
     return <div className="preview-empty">connecting…</div>;
   }
-  const src = `${previewBase}index.html`;
+  // index when home, otherwise navigate to /<route> — server resolves
+  // /preview/<id>/<route> to dist/<route>/index.html (Astro's default
+  // folder-mode build) or dist/<route>.html (file-mode).
+  const src =
+    currentRoute === ""
+      ? `${previewBase}index.html`
+      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
+  const externalUrl =
+    currentRoute === "" ? previewBase : `${previewBase}${currentRoute.replace(/^\//, "")}`;
 
   return (
     <div className="preview">
@@ -97,10 +194,17 @@ export function PreviewPane({ previewBase, reloadKey = "0" }: Props) {
           className="preview-toolbar-btn"
           title="Open preview in a new tab"
           aria-label="Open preview in a new tab"
-          onClick={() => window.open(previewBase, "_blank", "noopener")}
+          onClick={() => window.open(externalUrl, "_blank", "noopener")}
         >
           🌐
         </button>
+        {pages.length > 1 && (
+          <PagePicker
+            pages={pages}
+            current={currentRoute}
+            onPick={setCurrentRoute}
+          />
+        )}
         <div className="preview-toolbar-spacer" />
         <button
           type="button"
@@ -129,6 +233,73 @@ export function PreviewPane({ previewBase, reloadKey = "0" }: Props) {
           onClear={() => setLogs([])}
           onClose={() => setConsoleOpen(false)}
         />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Dropdown listing every Astro page found in src/pages/. Hidden when the
+ * project has zero or one pages (no point picking when there's nothing to
+ * pick from).
+ */
+function PagePicker({
+  pages,
+  current,
+  onPick,
+}: {
+  pages: PageOption[];
+  current: string;
+  onPick: (route: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const el = wrapRef.current;
+      if (el && !el.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const currentLabel =
+    pages.find((p) => p.routePath === current)?.label ?? "Home";
+
+  return (
+    <div className="page-picker" ref={wrapRef}>
+      <button
+        type="button"
+        className="page-picker-btn"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        title="Switch to another page in this site"
+      >
+        <span className="page-picker-label">{currentLabel}</span>
+        <span className="caret" aria-hidden>
+          ▾
+        </span>
+      </button>
+      {open && (
+        <div className="page-picker-popover" role="listbox">
+          {pages.map((p) => (
+            <button
+              key={p.routePath}
+              type="button"
+              className={`page-picker-item${p.routePath === current ? " active" : ""}`}
+              onClick={() => {
+                onPick(p.routePath);
+                setOpen(false);
+              }}
+              title={p.source}
+            >
+              <span className="page-picker-item-label">{p.label}</span>
+              <span className="page-picker-item-source">{p.source}</span>
+            </button>
+          ))}
+        </div>
       )}
     </div>
   );
