@@ -18,6 +18,7 @@ import { ProjectSwitcher } from "./components/ProjectSwitcher.tsx";
 import { QuickFile } from "./components/QuickFile.tsx";
 import { GlobalSearch } from "./components/GlobalSearch.tsx";
 import { SessionsSidebar } from "./components/SessionsSidebar.tsx";
+import { CostDashboard } from "./components/CostDashboard.tsx";
 import { Welcome, shouldShowWelcome } from "./components/Welcome.tsx";
 import { useLabSession, type LabMode } from "./lib/useLabSession.ts";
 import { useTheme } from "./lib/useTheme.ts";
@@ -249,6 +250,7 @@ function Lab({
   const [quickFileOpen, setQuickFileOpen] = useState(false);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [costOpen, setCostOpen] = useState(false);
   // Filename to highlight in CodeView when set via quick file picker / search.
   const [requestedFile, setRequestedFile] = useState<string | null>(null);
   // First-time welcome modal — only opens when localStorage flag is unset.
@@ -563,6 +565,7 @@ function Lab({
             onShowShortcuts={onShowShortcuts}
             onShowHistory={() => setHistoryOpen(true)}
             onShowSettings={onShowSettings}
+            onShowCost={() => setCostOpen(true)}
             prefilledPrompt={prefilled?.text}
             prefilledNonce={prefilled?.nonce}
           />
@@ -623,6 +626,11 @@ function Lab({
         open={sessionsOpen}
         onClose={() => setSessionsOpen(false)}
         bumpKey={lab.cumulativeCostUsd}
+      />
+      <CostDashboard
+        open={costOpen}
+        onClose={() => setCostOpen(false)}
+        projectId={projectId}
       />
     </div>
   );

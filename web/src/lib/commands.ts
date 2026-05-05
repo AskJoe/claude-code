@@ -19,6 +19,7 @@ export type CommandContext = {
   copyLastAssistant: () => void;
   showHistory: () => void;
   showSettings: () => void;
+  showCost: () => void;
   /** Used by stub commands: "Not yet wired" notice surfaces to the user. */
   notify: (text: string) => void;
 };
@@ -50,7 +51,7 @@ export const COMMANDS: Command[] = [
 
   // Project
   { id: "restart-preview", label: "Restart preview / auto-builder", group: "Project", action: (c) => c.notify("/restart preview — not yet wired") },
-  { id: "cost", label: "Show cost breakdown", group: "Project", action: (c) => c.notify("/cost — not yet wired") },
+  { id: "cost", label: "Show cost dashboard", group: "Project", action: (c) => c.showCost() },
   { id: "doctor", label: "Run connectivity + auth check", group: "Project", action: (c) => c.notify("/doctor — not yet wired") },
   { id: "share", label: "Generate share link", group: "Project", action: (c) => c.notify("/share — not yet wired") },
   { id: "export-md", label: "Export transcript as Markdown", group: "Project", action: (c) => c.exportTranscript("markdown") },

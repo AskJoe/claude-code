@@ -88,6 +88,7 @@ import {
 import { resolveSessionPath } from "./sessions.ts";
 import { mountUploads } from "./uploads.ts";
 import { mountSearch } from "./search.ts";
+import { mountCostSummary } from "./cost-summary.ts";
 import { mountExport } from "./export.ts";
 import type {
   ClientCommand,
@@ -482,6 +483,9 @@ mountUploads(app);
 
 // Global search across files + chat history (GET /api/projects/:id/search)
 mountSearch(app);
+
+// Cost summary (GET /api/projects/:id/cost-summary)
+mountCostSummary(app);
 
 // Transcript export (GET /api/projects/:id/sessions/:sid/export)
 mountExport(app);

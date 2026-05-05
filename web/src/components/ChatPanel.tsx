@@ -75,6 +75,7 @@ type Props = {
   onShowShortcuts?: () => void;
   onShowHistory?: () => void;
   onShowSettings?: () => void;
+  onShowCost?: () => void;
   onSystemMessage?: (text: string) => void;
   /** Optional initial draft text. When this prop changes (welcome modal click,
    *  sample-prompt button, future command palette), it gets dropped into the
@@ -114,6 +115,7 @@ export function ChatPanel({
   onShowShortcuts,
   onShowHistory,
   onShowSettings,
+  onShowCost,
   onSystemMessage,
   prefilledPrompt,
   prefilledNonce,
@@ -442,6 +444,10 @@ export function ChatPanel({
         if (onShowSettings) onShowSettings();
         else notify("Settings — not yet wired");
       },
+      showCost: () => {
+        if (onShowCost) onShowCost();
+        else notify("Cost dashboard — not yet wired");
+      },
       notify,
     }),
     [
@@ -451,6 +457,7 @@ export function ChatPanel({
       onShowShortcuts,
       onShowHistory,
       onShowSettings,
+      onShowCost,
       copyLastAssistant,
       exportTranscript,
       notify,
@@ -520,6 +527,7 @@ export function ChatPanel({
             advisor={cumulativeAdvisorCostUsd}
             budget={budgetUsd}
             advisorActive={getPreset(presetId).advisor !== null}
+            onClick={onShowCost}
           />
           {onSetPreset && (
             <PresetPill
@@ -856,12 +864,14 @@ function CostMeter({
   advisor,
   budget,
   advisorActive,
+  onClick,
 }: {
   spent: number;
   executor?: number;
   advisor?: number;
   budget: number;
   advisorActive: boolean;
+  onClick?: () => void;
 }) {
   const pct = Math.min(100, Math.round((spent / Math.max(budget, 0.01)) * 100));
   const tone = pct >= 90 ? "danger" : pct >= 60 ? "warn" : "ok";
@@ -875,8 +885,15 @@ function CostMeter({
       `Executor: $${exec.toFixed(4)}  ·  Advisor (Opus 4.7): $${adv.toFixed(4)}`
     );
   }
+  if (onClick) tooltipParts.push("Click for the cost dashboard.");
+  const Tag = onClick ? "button" : "div";
   return (
-    <div className="cost-meter-wrap" title={tooltipParts.join("\n")}>
+    <Tag
+      type={onClick ? "button" : undefined}
+      className={`cost-meter-wrap${onClick ? " cost-meter-wrap-clickable" : ""}`}
+      title={tooltipParts.join("\n")}
+      onClick={onClick}
+    >
       <span className={`cost-meter cost-meter-${tone}`}>
         ${spent.toFixed(2)} / ${budget.toFixed(2)}
       </span>
@@ -897,7 +914,7 @@ function CostMeter({
           </span>
         </div>
       )}
-    </div>
+    </Tag>
   );
 }
 
