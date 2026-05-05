@@ -108,6 +108,8 @@ export type GithubStatus = {
   configured: boolean;
   connected: boolean;
   githubLogin: string | null;
+  connectedAt?: string | null;
+  installationId?: number | null;
 };
 
 export type ChatSessionSummary = {
@@ -163,6 +165,12 @@ export const api = {
 
   logout: () =>
     request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
+
+  // GitHub connection (Phase 13.4)
+  githubStatus: () => request<GithubStatus>("/api/github/status"),
+
+  githubDisconnect: () =>
+    request<{ ok: true }>("/api/github/disconnect", { method: "POST" }),
 
   // Chat sessions sidebar (Phase 4.1)
   listChatSessions: (projectId: number) =>

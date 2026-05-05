@@ -590,6 +590,41 @@ function NotificationsTab() {
 function DataTab() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [importNote, setImportNote] = useState<string | null>(null);
+  const [github, setGithub] = useState<{
+    configured: boolean;
+    connected: boolean;
+    githubLogin: string | null;
+    connectedAt?: string | null;
+  } | null>(null);
+  const [githubBusy, setGithubBusy] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .githubStatus()
+      .then((s) => {
+        if (!cancelled) setGithub(s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const disconnectGithub = async () => {
+    setGithubBusy(true);
+    setGithubError(null);
+    try {
+      await api.githubDisconnect();
+      const fresh = await api.githubStatus();
+      setGithub(fresh);
+    } catch (err: any) {
+      setGithubError(err?.message ?? "could not disconnect");
+    } finally {
+      setGithubBusy(false);
+    }
+  };
 
   const downloadSettings = () => {
     const out: Record<string, string> = {};
@@ -647,6 +682,61 @@ function DataTab() {
   return (
     <>
       <h2 className="settings-section-title">Data</h2>
+
+      <div className="settings-row">
+        <label>GitHub access</label>
+        <div>
+          {github === null && (
+            <div className="settings-help">Loading…</div>
+          )}
+          {github && !github.configured && (
+            <div className="settings-help">
+              The lab's GitHub App isn't configured on this server, so
+              GitHub features are unavailable.
+            </div>
+          )}
+          {github && github.configured && !github.connected && (
+            <div className="settings-help">
+              No GitHub account connected. Use the Connect repo button on a
+              project to authorize.
+            </div>
+          )}
+          {github && github.connected && (
+            <div>
+              <div style={{ fontSize: 13, marginBottom: 6 }}>
+                Connected as{" "}
+                <strong>@{github.githubLogin}</strong>
+                {github.connectedAt && (
+                  <span style={{ color: "var(--text-3)", fontSize: 11, marginLeft: 6 }}>
+                    since {new Date(github.connectedAt).toLocaleDateString()}
+                  </span>
+                )}
+              </div>
+              <div className="settings-help" style={{ marginBottom: 8 }}>
+                The lab's GitHub App has access to repositories you authorized
+                during the install. To revoke or change which repos it can
+                see, manage the install on github.com.
+              </div>
+              <button
+                type="button"
+                className="settings-button secondary"
+                onClick={disconnectGithub}
+                disabled={githubBusy}
+              >
+                {githubBusy ? "Disconnecting…" : "Disconnect"}
+              </button>
+              {githubError && (
+                <span
+                  className="settings-help"
+                  style={{ color: "var(--red)", marginLeft: 8 }}
+                >
+                  {githubError}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
 
       <div className="settings-row">
         <label>Export</label>

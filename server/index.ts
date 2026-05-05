@@ -62,6 +62,7 @@ import {
   listMessagesForSession,
   updateChatSessionMeta,
   type ChatSessionRow,
+  deleteGithubConnection,
   getGithubConnection,
   getProjectById,
   listMessages,
@@ -601,7 +602,20 @@ app.get("/api/github/status", authMiddleware, (c) => {
     configured: APP_CONFIGURED,
     connected: !!conn,
     githubLogin: conn?.github_login ?? null,
+    connectedAt: conn?.connected_at ?? null,
+    installationId: conn?.installation_id ?? null,
   });
+});
+
+// Disconnect the user's GitHub account. Drops our copy of their tokens; the
+// user can re-authorize anytime via the existing connect-repo flow. We don't
+// uninstall the GitHub App on their side — that's a separate user action on
+// github.com.
+app.post("/api/github/disconnect", authMiddleware, (c) => {
+  const user = c.get("user");
+  deleteGithubConnection(user.id);
+  log.info("github disconnected", { userId: user.id });
+  return c.json({ ok: true });
 });
 
 // ── Preview ──────────────────────────────────────────────────────────────────
