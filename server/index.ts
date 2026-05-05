@@ -1,0 +1,1026 @@
+/**
+ * Cloudwise Lab — Hono server entry point.
+ *
+ * Routes:
+ *   GET  /health
+ *   GET  /api/me                            current user (or null)
+ *   POST /api/auth/signup
+ *   POST /api/auth/signin
+ *   POST /api/auth/logout
+ *   GET  /api/projects                      list current user's projects
+ *   POST /api/projects                      create
+ *   POST /api/projects/:id/rename
+ *   DELETE /api/projects/:id
+ *   GET  /api/github/status                 connection state for current user
+ *   GET  /api/github/connect                start OAuth (registered by github-oauth.ts)
+ *   GET  /api/github/callback               OAuth return        (ditto)
+ *   POST /api/github/disconnect             remove the connection (ditto)
+ *   GET  /preview/:projectId/*              static files from a project's dir
+ *   WS   /ws?projectId=N                    chat stream scoped to that project
+ */
+
+import "./env.ts";
+
+import { serve } from "@hono/node-server";
+import { createNodeWebSocket } from "@hono/node-ws";
+import { Hono } from "hono";
+import { stat, readFile } from "node:fs/promises";
+import { join as pjoin } from "node:path";
+
+import { startAgent } from "./agent.ts";
+import { getSettings } from "./settings.ts";
+import { registerAdminRoutes } from "./admin.ts";
+import { openSession, type Session } from "./sessions.ts";
+import { PORT } from "./env.ts";
+import { createRateLimiter } from "./rate-limit.ts";
+import {
+  authMiddleware,
+  readUser,
+  readUserForWs,
+  REQUIRE_AUTH,
+  registerAuthRoutes,
+  type AuthUser,
+} from "./auth.ts";
+import { registerGitHubAppRoutes, APP_CONFIGURED } from "./github-app.ts";
+import { distExists, mountSpa } from "./static.ts";
+import { log } from "./log.ts";
+import {
+  createProjectFor,
+  deleteProjectAndDir,
+  getProjectFor,
+  listProjectsFor,
+  projectDir,
+  publicProject,
+  type PublicProject,
+} from "./projects.ts";
+import {
+  appendMessage,
+  getGithubConnection,
+  getProjectById,
+  listMessages,
+  renameProject,
+  setProjectRenderSiteUrl,
+  touchProject,
+} from "./db.ts";
+import { connectExistingRepoForProject, startAutoSync, type AutoSyncer } from "./github-sync.ts";
+import { startAutoBuilder, type AutoBuilder, type BuildState } from "./auto-builder.ts";
+import { PREVIEW_EDITOR_RUNTIME } from "./preview-editor-runtime.ts";
+import {
+  buildDeployUrl,
+  commitRenderYaml,
+  predictedSiteUrl,
+} from "./render-publish.ts";
+import {
+  listCommitsForProject,
+  revertProjectToCommit,
+} from "./git-history.ts";
+import {
+  getPublishStatus,
+  publishPromote,
+} from "./publish-promote.ts";
+import { resolveSessionPath } from "./sessions.ts";
+import type {
+  ClientCommand,
+  FileNode,
+  ServerEvent,
+} from "../shared/events.ts";
+
+
+const app = new Hono();
+const { injectWebSocket, upgradeWebSocket } = createNodeWebSocket({ app });
+
+// ── Static + simple endpoints ────────────────────────────────────────────────
+
+app.get("/health", (c) => c.json({ ok: true }));
+
+// /api/me — open endpoint, returns user or null. The SPA uses this to decide
+// whether to show the sign-in screen.
+app.get("/api/me", async (c) => {
+  const user = await readUser(c);
+  return c.json({
+    user,
+    requireAuth: REQUIRE_AUTH,
+    githubOauthConfigured: APP_CONFIGURED,
+  });
+});
+
+registerAuthRoutes(app);
+registerGitHubAppRoutes(app);
+registerAdminRoutes(app);
+
+// ── Projects API ─────────────────────────────────────────────────────────────
+
+app.get("/api/projects", authMiddleware, (c) => {
+  const user = c.get("user");
+  return c.json({ projects: listProjectsFor(user.id).map(publicProject) });
+});
+
+app.post("/api/projects", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const body = await c.req.json().catch(() => ({}));
+  const displayName =
+    typeof body?.displayName === "string" && body.displayName.trim()
+      ? body.displayName.trim().slice(0, 80)
+      : "Untitled project";
+  const project = await createProjectFor(user.id, displayName);
+  return c.json({ project: publicProject(project) });
+});
+
+app.post("/api/projects/:id/rename", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  const body = await c.req.json().catch(() => ({}));
+  const displayName =
+    typeof body?.displayName === "string" && body.displayName.trim()
+      ? body.displayName.trim().slice(0, 80)
+      : null;
+  if (!displayName) return c.json({ error: "displayName required" }, 400);
+  renameProject(id, displayName);
+  return c.json({ ok: true });
+});
+
+app.get("/api/projects/:id/publish-status", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.github_repo_full_name) {
+    return c.json({
+      status: {
+        aheadBy: 0,
+        behindBy: 0,
+        hasUnpublished: false,
+        mainSha: null,
+        workingSha: null,
+      },
+    });
+  }
+  const conn = getGithubConnection(user.id);
+  if (!conn) {
+    return c.json({
+      status: {
+        aheadBy: 0,
+        behindBy: 0,
+        hasUnpublished: false,
+        mainSha: null,
+        workingSha: null,
+      },
+    });
+  }
+  try {
+    const status = await getPublishStatus({
+      project,
+      installationId: conn.installation_id,
+    });
+    return c.json({ status });
+  } catch (err: any) {
+    log.error("publish-status failed", {
+      projectId: id,
+      err: err?.message ?? String(err),
+    });
+    return c.json({ error: err?.message ?? "publish-status failed" }, 500);
+  }
+});
+
+app.post("/api/projects/:id/publish-promote", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.github_repo_full_name) {
+    return c.json({ error: "project not connected to GitHub" }, 400);
+  }
+  const conn = getGithubConnection(user.id);
+  if (!conn) return c.json({ error: "GitHub not connected" }, 400);
+
+  try {
+    const { promotedSha } = await publishPromote({
+      project,
+      installationId: conn.installation_id,
+      projectDir: projectDir(id),
+    });
+    return c.json({ ok: true, promotedSha });
+  } catch (err: any) {
+    log.error("publish-promote failed", {
+      projectId: id,
+      err: err?.message ?? String(err),
+    });
+    return c.json({ error: err?.message ?? "publish-promote failed" }, 500);
+  }
+});
+
+app.get("/api/projects/:id/commits", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.github_repo_full_name) return c.json({ commits: [] });
+  const conn = getGithubConnection(user.id);
+  if (!conn) return c.json({ commits: [] });
+
+  try {
+    const commits = await listCommitsForProject({
+      project,
+      installationId: conn.installation_id,
+      perPage: 30,
+    });
+    return c.json({ commits });
+  } catch (err: any) {
+    log.error("list commits failed", {
+      projectId: id,
+      err: err?.message ?? String(err),
+    });
+    return c.json({ error: err?.message ?? "list commits failed" }, 500);
+  }
+});
+
+app.post("/api/projects/:id/commits/:sha/revert", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  const sha = c.req.param("sha");
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  if (!/^[a-f0-9]{7,40}$/.test(sha)) return c.json({ error: "bad sha" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.github_repo_full_name) {
+    return c.json({ error: "project not connected to GitHub" }, 400);
+  }
+  const conn = getGithubConnection(user.id);
+  if (!conn) return c.json({ error: "GitHub not connected" }, 400);
+
+  try {
+    await revertProjectToCommit({
+      project,
+      installationId: conn.installation_id,
+      sha,
+      projectDir: projectDir(id),
+    });
+    return c.json({ ok: true });
+  } catch (err: any) {
+    log.error("revert failed", {
+      projectId: id,
+      sha,
+      err: err?.message ?? String(err),
+    });
+    return c.json({ error: err?.message ?? "revert failed" }, 500);
+  }
+});
+
+app.post("/api/projects/:id/render/prepare-deploy", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!project.github_repo_full_name) {
+    return c.json({ error: "Connect GitHub for this project first" }, 400);
+  }
+  if (!getGithubConnection(user.id)) {
+    return c.json({ error: "GitHub not connected" }, 400);
+  }
+  try {
+    await commitRenderYaml({
+      userId: user.id,
+      projectId: id,
+      projectDir: projectDir(id),
+    });
+    const fresh = getProjectFor(user.id, id)!;
+    return c.json({
+      ok: true,
+      deployUrl: buildDeployUrl(fresh),
+      predictedSiteUrl: predictedSiteUrl(fresh),
+    });
+  } catch (err: any) {
+    log.error("prepare-deploy failed", { projectId: id, err: err?.message ?? String(err) });
+    return c.json({ error: err?.message ?? "prepare-deploy failed" }, 500);
+  }
+});
+
+app.get("/api/projects/:id/render/probe", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+
+  // Use the saved render_site_url if confirmed; otherwise probe the predicted
+  // URL. Predicted is only valid once the project has a GitHub repo.
+  let url: string | null = project.render_site_url;
+  if (!url) {
+    if (!project.github_repo_full_name) {
+      return c.json({ live: false, url: null, reason: "no_repo" });
+    }
+    url = predictedSiteUrl(project);
+  }
+
+  // HEAD with a short timeout. Render's static-site URL returns 200 once
+  // deployed and 404 before (or while DNS is propagating).
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      signal: controller.signal,
+    });
+    return c.json({
+      live: res.status >= 200 && res.status < 400,
+      status: res.status,
+      url,
+    });
+  } catch (err: any) {
+    return c.json({
+      live: false,
+      status: 0,
+      url,
+      error: err?.name === "AbortError" ? "timeout" : (err?.message ?? "fetch failed"),
+    });
+  } finally {
+    clearTimeout(t);
+  }
+});
+
+app.post("/api/projects/:id/render/confirm-deployed", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+
+  const body = await c.req.json().catch(() => ({} as any));
+  let siteUrl: string;
+  if (typeof body?.siteUrl === "string" && body.siteUrl.trim()) {
+    siteUrl = body.siteUrl.trim();
+    // Light validation — must look like a URL
+    if (!/^https?:\/\//.test(siteUrl)) {
+      return c.json({ error: "siteUrl must be a full URL starting with http(s)://" }, 400);
+    }
+  } else {
+    // Default to the predicted URL based on the service name in render.yaml.
+    siteUrl = predictedSiteUrl(project);
+  }
+  setProjectRenderSiteUrl(id, siteUrl);
+  log.info("render site confirmed", { projectId: id, siteUrl });
+  return c.json({ ok: true, siteUrl });
+});
+
+app.post("/api/projects/:id/github/connect-repo", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  if (!getGithubConnection(user.id)) {
+    return c.json({ error: "GitHub not connected — link your GitHub account first" }, 400);
+  }
+  try {
+    const result = await connectExistingRepoForProject({
+      userId: user.id,
+      projectId: id,
+      projectDir: projectDir(id),
+    });
+    if (result.kind === "repo_not_found") {
+      // Soft signal — the user hasn't created the repo on GitHub yet. The
+      // client polls this endpoint while waiting; 200 + ready:false keeps
+      // that polling clean instead of spamming 5xx errors.
+      return c.json({
+        ok: true,
+        ready: false,
+        expectedFullName: result.expectedFullName,
+      });
+    }
+    return c.json({
+      ok: true,
+      ready: true,
+      repoFullName: result.repoFullName,
+      defaultBranch: result.defaultBranch,
+    });
+  } catch (err: any) {
+    log.error("connect-repo failed", { projectId: id, err: err?.message ?? String(err) });
+    return c.json({ error: err?.message ?? "connect-repo failed" }, 500);
+  }
+});
+
+app.delete("/api/projects/:id", authMiddleware, async (c) => {
+  const user = c.get("user");
+  const id = Number(c.req.param("id"));
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const project = getProjectFor(user.id, id);
+  if (!project) return c.json({ error: "not found" }, 404);
+  await deleteProjectAndDir(id);
+  return c.json({ ok: true });
+});
+
+// ── GitHub status ────────────────────────────────────────────────────────────
+
+app.get("/api/github/status", authMiddleware, (c) => {
+  const user = c.get("user");
+  const conn = getGithubConnection(user.id);
+  return c.json({
+    configured: APP_CONFIGURED,
+    connected: !!conn,
+    githubLogin: conn?.github_login ?? null,
+  });
+});
+
+// ── Preview ──────────────────────────────────────────────────────────────────
+
+const liveSessions = new Map<number, Session>();
+const liveBuilders = new Map<number, AutoBuilder>();
+const MIME: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".ico": "image/x-icon",
+  ".webp": "image/webp",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/plain; charset=utf-8",
+};
+
+app.get("/preview/:projectId/*", async (c) => {
+  const projectId = Number(c.req.param("projectId"));
+  if (!Number.isFinite(projectId)) return c.text("bad project id", 400);
+  const session = liveSessions.get(projectId);
+  if (!session) return c.text("project not open", 404);
+
+  const wildcard = c.req.path.replace(`/preview/${projectId}/`, "") || "index.html";
+  const isHtmlRoot = wildcard === "index.html" || wildcard.endsWith("/index.html");
+
+  // Stale-detect: if a build is in flight, or src/ has been modified after
+  // the last successful build, return a "Building…" placeholder for the root
+  // page request. This is what prevents the preview from confidently showing
+  // a stale dist after the user edited source.
+  if (isHtmlRoot) {
+    const builder = liveBuilders.get(projectId);
+    if (builder) {
+      const state = builder.status();
+      const stale = state.status !== "ok" && state.lastBuildAt === null
+        ? await isSrcNewerThanDist(session.rootDir)
+        : state.status === "building" || (await isSrcNewerThanDist(session.rootDir));
+      if (state.status === "building") {
+        return c.html(buildingPage("Cloudwise Lab is rebuilding your site… (1–10 seconds)"), 200);
+      }
+      if (stale && state.status !== "error") {
+        return c.html(buildingPage("Source changed. Cloudwise Lab will rebuild within ~8 seconds."), 200);
+      }
+      if (state.status === "error") {
+        return c.html(buildErrorPage(state.lastError ?? "Unknown build error"), 200);
+      }
+    }
+  }
+
+  // Astro builds into dist/. Try dist/<path> first, then <path> at root.
+  let abs: string | null = null;
+  for (const candidate of [pjoin("dist", wildcard), wildcard]) {
+    let resolved: string;
+    try {
+      resolved = await resolveSessionPath(session, candidate);
+    } catch {
+      continue;
+    }
+    try {
+      const s = await stat(resolved);
+      if (s.isDirectory()) {
+        const indexed = pjoin(resolved, "index.html");
+        try {
+          await stat(indexed);
+          abs = indexed;
+          break;
+        } catch {
+          continue;
+        }
+      } else {
+        abs = resolved;
+        break;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  if (!abs) {
+    return c.html(
+      `<!doctype html><html><head><meta charset="utf-8"><title>not built yet</title></head>
+       <body style="font-family:system-ui;color:#666;padding:32px;text-align:center;">
+         <p style="font-size:14px;">No build output yet. Ask the agent to <code>npm run build</code>, then this preview will fill in.</p>
+       </body></html>`,
+      404
+    );
+  }
+
+  const ext = abs.slice(abs.lastIndexOf(".")).toLowerCase();
+  const buf = await readFile(abs);
+  // raw=1 forces text/plain so the Code view can fetch HTML/CSS/JS as source
+  // rather than rendering it.
+  const raw = c.req.query("raw") === "1";
+
+  // For HTML responses (the rendered preview), inject the click-to-edit
+  // runtime right before </body>. We don't inject for raw views (Code tab)
+  // or for non-HTML assets.
+  if (!raw && ext === ".html") {
+    const html = buf.toString("utf-8");
+    // Astro builds emit root-rooted asset paths (`/_astro/...css`,
+    // `/favicon.svg`, etc.). The preview iframe is served from
+    // `/preview/<id>/`, so a link like `<link href="/_astro/foo.css">`
+    // would resolve against the lab's root and 404. Prefix any root-
+    // rooted href/src/srcset path with `/preview/<id>` so the browser
+    // fetches it from the per-project preview namespace.
+    const rewritten = rewriteRootPaths(html, projectId);
+    const injected = injectEditorRuntime(rewritten);
+    return new Response(injected, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Frame-Options": "SAMEORIGIN",
+      },
+    });
+  }
+
+  return new Response(buf, {
+    headers: {
+      "Content-Type": raw
+        ? "text/plain; charset=utf-8"
+        : (MIME[ext] ?? "text/plain; charset=utf-8"),
+      "Cache-Control": "no-store",
+      "X-Frame-Options": "SAMEORIGIN",
+    },
+  });
+});
+
+/**
+ * Astro builds emit root-rooted asset paths like `/_astro/foo.css` and
+ * `/favicon.svg`. The preview iframe is served from `/preview/<id>/`, so
+ * those URLs need to be prefixed with the same path or the browser fetches
+ * them from the lab's root (where they 404).
+ *
+ * Rewrites `(href|src|srcset)="/..."` to `(href|src|srcset)="/preview/<id>/..."`
+ * for any path that:
+ *   - starts with a single `/` (so we don't touch `//cdn.example` protocol-
+ *     relative URLs), AND
+ *   - isn't already prefixed with `/preview/`.
+ *
+ * This catches Astro's `_astro/`, `favicon`, `images/`, anything in `public/`,
+ * and any in-site links the user may have added.
+ */
+function rewriteRootPaths(html: string, projectId: number): string {
+  const prefix = `/preview/${projectId}`;
+  // (?:["'])  — opening quote captured separately so we keep it intact
+  // \/        — root-rooted path
+  // (?![\/p]) — negative lookahead: skip `//` (protocol-relative) and any
+  //             path that already begins with `/preview/`
+  return html.replace(
+    /(\b(?:href|src|srcset)\s*=\s*["'])\/(?!\/|preview\/)/g,
+    `$1${prefix}/`
+  );
+}
+
+/**
+ * Splices the click-to-edit script into a served HTML page right before
+ * </body>. Falls back to appending if there's no </body> (e.g., partial
+ * HTML).
+ */
+function injectEditorRuntime(html: string): string {
+  const tag = `<script>${PREVIEW_EDITOR_RUNTIME}</script>`;
+  if (html.includes("</body>")) {
+    return html.replace("</body>", `${tag}</body>`);
+  }
+  return html + tag;
+}
+
+// ── WebSocket: /ws?projectId=N ───────────────────────────────────────────────
+
+app.use("/ws", async (c, next) => {
+  const user = await readUserForWs(c);
+  if (!user) return c.json({ error: "unauthorized" }, 401);
+  c.set("user", user);
+  return next();
+});
+
+app.get(
+  "/ws",
+  upgradeWebSocket((c) => {
+    const user = c.get("user") as AuthUser | undefined;
+    const projectId = Number(c.req.query("projectId"));
+    const wsMode: "code" | "plan" =
+      c.req.query("mode") === "plan" ? "plan" : "code";
+    let session: Session | null = null;
+    let agent: ReturnType<typeof startAgent> | null = null;
+    let project: PublicProject | null = null;
+    let autoSync: AutoSyncer | null = null;
+    let autoBuilder: AutoBuilder | null = null;
+    let emitRaw: (e: ServerEvent) => void = () => {};
+    // Snapshot the rate limit at session-open time. Admin changes via the
+    // Settings tab take effect on subsequent new sessions.
+    const sessionRateLimit = getSettings().rateLimitPerMinute;
+    const rateLimiter = createRateLimiter({ perMinute: sessionRateLimit });
+
+    const persist = (e: ServerEvent) => {
+      if (!project) return;
+      const role = roleFromEvent(e);
+      if (!role) return;
+      const cost = e.type === "agent:turn_end" ? e.cost : null;
+      try {
+        appendMessage({
+          projectId: project.id,
+          role,
+          contentJson: JSON.stringify(e),
+          costUsd: cost,
+        });
+      } catch (err) {
+        log.error("persist message failed", { err: String(err) });
+      }
+    };
+    const emit = (e: ServerEvent) => {
+      persist(e);
+      emitRaw(e);
+    };
+
+    const initSession = async () => {
+      if (!user) return;
+      if (!Number.isFinite(projectId)) {
+        emitRaw({ type: "agent:error", message: "missing projectId" });
+        return;
+      }
+      const row = getProjectFor(user.id, projectId);
+      if (!row) {
+        emitRaw({ type: "agent:error", message: "project not found" });
+        return;
+      }
+      project = publicProject(row);
+
+      // Replay last 200 messages so the chat history is restored.
+      const history = listMessages(project.id, 200);
+
+      // If this project is connected to GitHub, install the auto-syncer.
+      // It pings on every fs change and runs a debounced add/commit/push.
+      autoSync = startAutoSync({
+        userId: user.id,
+        project: row,
+        projectDir: projectDir(project.id),
+      });
+
+      // The auto-builder rebuilds dist/ from src/ on every change so the
+      // preview always reflects the latest source. Without this, dist/ goes
+      // stale and the preview lies about what the project actually contains.
+      autoBuilder = startAutoBuilder({
+        projectId: project.id,
+        projectDir: projectDir(project.id),
+        onStateChange: (s: BuildState) => {
+          emitRaw({
+            type: "build:state",
+            status: s.status,
+            lastBuildAt: s.lastBuildAt,
+            lastError: s.lastError,
+          });
+        },
+      });
+      liveBuilders.set(project.id, autoBuilder);
+
+      session = await openSession({
+        projectId: project.id,
+        rootDir: projectDir(project.id),
+        onChange: (files) => emitRaw({ type: "files:changed", files }),
+        onFsEvent: () => {
+          autoSync?.notifyChange();
+          autoBuilder?.notifyChange();
+        },
+      });
+      liveSessions.set(project.id, session);
+      touchProject(project.id);
+      agent = startAgent(session, emit, { userId: user.id, mode: wsMode });
+
+      // Reconcile stale dist on session open: if src is newer than dist (or
+      // there's no dist), kick off a build immediately so the preview comes
+      // up fresh. This is the fix for "I had Mountain Brew showing in the
+      // preview but the source has been default Astro the whole time."
+      // Optional chaining guard mirrors the onFsEvent callback above —
+      // autoBuilder can be unset if the WS races with teardown during the
+      // `await openSession(...)` window.
+      if (await isSrcNewerThanDist(projectDir(project.id))) {
+        autoBuilder?.triggerNow();
+      }
+
+      emitRaw({
+        type: "session:ready",
+        sessionId: String(project.id),
+        previewBase: `/preview/${project.id}/`,
+        budgetUsd: agent.budgetUsd(),
+        rateLimit: { perMinute: sessionRateLimit },
+      });
+
+      // Replay history AFTER session:ready so the client knows where to put it.
+      for (const m of history) {
+        try {
+          const evt = JSON.parse(m.content_json) as ServerEvent;
+          emitRaw(evt);
+        } catch {}
+      }
+
+      // Hand the agent a one-shot context preamble built from prior
+      // user/assistant turns so the next chat message it sees has the
+      // conversation history attached. `listMessages` returns rows in
+      // descending id order — flip them back to chronological for
+      // readability inside the preamble.
+      const preamble = buildHistoryPreamble(history);
+      if (preamble) agent.setHistoryPreamble(preamble);
+    };
+
+    const teardownSession = async () => {
+      if (agent) {
+        await agent.dispose();
+        agent = null;
+      }
+      if (session) {
+        liveSessions.delete(session.projectId);
+        await session.dispose();
+        session = null;
+      }
+      if (autoSync) {
+        try {
+          await autoSync.flush();
+        } catch {
+          // already logged inside the syncer
+        }
+        autoSync.dispose();
+        autoSync = null;
+      }
+      if (autoBuilder) {
+        if (project) liveBuilders.delete(project.id);
+        autoBuilder.dispose();
+        autoBuilder = null;
+      }
+    };
+
+    return {
+      async onOpen(_evt, ws) {
+        emitRaw = (e) => {
+          try {
+            ws.send(JSON.stringify(e));
+          } catch (err) {
+            console.error("[ws] send failed:", err);
+          }
+        };
+        await initSession();
+      },
+
+      async onMessage(evt, _ws) {
+        let cmd: ClientCommand;
+        try {
+          cmd = JSON.parse(typeof evt.data === "string" ? evt.data : evt.data.toString());
+        } catch {
+          return;
+        }
+        switch (cmd.type) {
+          case "user:message": {
+            if (!agent || !project) return;
+            if (agent.isExhausted()) {
+              emit({
+                type: "warn:budget_exceeded",
+                spentUsd: agent.cumulativeCostUsd(),
+                limitUsd: agent.budgetUsd(),
+              });
+              return;
+            }
+            const wait = rateLimiter.check();
+            if (wait > 0) {
+              emit({ type: "warn:rate_limited", retryAfterMs: wait });
+              return;
+            }
+            // Persist as a `chat:user_message` ServerEvent so replay can fire
+            // it back as-is and render in chat history.
+            appendMessage({
+              projectId: project.id,
+              role: "user",
+              contentJson: JSON.stringify({
+                type: "chat:user_message",
+                text: cmd.text,
+              } satisfies ServerEvent),
+              costUsd: null,
+            });
+            await agent.send(cmd.text);
+            return;
+          }
+          case "agent:abort": {
+            if (agent) await agent.abort();
+            return;
+          }
+          case "session:reset": {
+            // Resetting a project-backed session means: clear chat, but keep
+            // files. (Files belong to the project, the user can edit them
+            // via the agent or delete the whole project to wipe.)
+            if (project) {
+              const { deleteMessages } = await import("./db.ts");
+              deleteMessages(project.id);
+            }
+            await teardownSession();
+            await initSession();
+            emit({ type: "session:reset_done" });
+            return;
+          }
+        }
+      },
+
+      async onClose() {
+        await teardownSession();
+      },
+    };
+  })
+);
+
+/**
+ * Returns true if any file under `<rootDir>/src/` has a newer mtime than
+ * `<rootDir>/dist/index.html`. Used to detect when the preview would serve
+ * stale build output. If dist/index.html doesn't exist, returns true (we
+ * can't preview without a build). Cheap enough to call per request — caps
+ * at the first newer file it finds via a depth-limited walk.
+ */
+async function isSrcNewerThanDist(rootDir: string): Promise<boolean> {
+  const { stat, readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  let distMtime: number;
+  try {
+    const s = await stat(join(rootDir, "dist", "index.html"));
+    distMtime = s.mtimeMs;
+  } catch {
+    return true; // no dist at all → the user needs a build
+  }
+  const walk = async (dir: string, depth = 0): Promise<boolean> => {
+    if (depth > 6) return false;
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const e of entries) {
+      const abs = join(dir, e.name);
+      if (e.isDirectory()) {
+        if (await walk(abs, depth + 1)) return true;
+      } else {
+        try {
+          const s = await stat(abs);
+          if (s.mtimeMs > distMtime) return true;
+        } catch {}
+      }
+    }
+    return false;
+  };
+  // Walk a few directories that affect the build. src/ is the obvious one;
+  // package.json, astro.config.mjs, public/ also invalidate dist.
+  const checks = [
+    join(rootDir, "src"),
+    join(rootDir, "public"),
+  ];
+  for (const dir of checks) {
+    if (await walk(dir)) return true;
+  }
+  for (const file of ["package.json", "astro.config.mjs", "tsconfig.json"]) {
+    try {
+      const s = await stat(join(rootDir, file));
+      if (s.mtimeMs > distMtime) return true;
+    } catch {}
+  }
+  return false;
+}
+
+function buildingPage(message: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Building…</title>
+    <meta http-equiv="refresh" content="3">
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
+      .card { text-align: center; max-width: 360px; }
+      .spinner { width: 28px; height: 28px; border: 3px solid #2a3340; border-top-color: #f5a524; border-radius: 50%; margin: 0 auto 16px; animation: spin 0.8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      p { color: #8b949e; font-size: 14px; line-height: 1.5; }
+      strong { color: #f5a524; }
+    </style>
+    </head>
+    <body><div class="card">
+      <div class="spinner"></div>
+      <p><strong>Building…</strong><br>${escapeHtml(message)}</p>
+    </div></body></html>`;
+}
+
+function buildErrorPage(message: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Build error</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; margin: 0; }
+      h1 { color: #f85149; font-size: 16px; margin: 0 0 12px 0; font-family: ui-monospace, SF Mono, Menlo, monospace; }
+      pre { background: #161b22; border: 1px solid #2a3340; padding: 16px; border-radius: 6px; font-family: ui-monospace, SF Mono, Menlo, monospace; font-size: 12px; line-height: 1.5; overflow: auto; white-space: pre-wrap; word-break: break-word; color: #e6edf3; max-height: calc(100vh - 100px); }
+      .hint { color: #8b949e; font-size: 12px; margin-top: 12px; }
+    </style></head>
+    <body>
+      <h1>⚠ Build failed</h1>
+      <pre>${escapeHtml(message)}</pre>
+      <p class="hint">Ask the agent to fix the error above. The preview will reload automatically once the next build succeeds.</p>
+    </body></html>`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Walk the persisted message rows (descending order from listMessages)
+ * and produce a chronological transcript of the user / assistant turns.
+ * Tool-use and tool-result events are skipped — they're noisy and the
+ * model can re-derive what it did from the user's prompt + assistant
+ * reply summary.
+ *
+ * Capped at PREAMBLE_MAX_CHARS so a long-running project doesn't blow
+ * past the context window on reopen.
+ */
+const PREAMBLE_MAX_CHARS = 12000;
+type HistoryRow = { content_json: string };
+function buildHistoryPreamble(rowsDesc: HistoryRow[]): string {
+  const chronological = [...rowsDesc].reverse();
+  const lines: string[] = [];
+  for (const row of chronological) {
+    let evt: ServerEvent;
+    try {
+      evt = JSON.parse(row.content_json) as ServerEvent;
+    } catch {
+      continue;
+    }
+    if (evt.type === "chat:user_message") {
+      lines.push(`User: ${evt.text}`);
+    } else if (evt.type === "agent:text") {
+      // Trim very long assistant turns; the gist is what matters.
+      const text =
+        evt.text.length > 800 ? evt.text.slice(0, 800) + "…" : evt.text;
+      lines.push(`Assistant: ${text}`);
+    }
+    // Skip tool_use / tool_result / turn_end / system / errors.
+  }
+  if (lines.length === 0) return "";
+  let preamble = lines.join("\n\n");
+  if (preamble.length > PREAMBLE_MAX_CHARS) {
+    // Keep the tail (most recent turns) — that's what the user is most
+    // likely referring to in their next message.
+    preamble =
+      "[earlier conversation truncated]\n\n" +
+      preamble.slice(preamble.length - PREAMBLE_MAX_CHARS);
+  }
+  return preamble;
+}
+
+function roleFromEvent(e: ServerEvent): string | null {
+  switch (e.type) {
+    case "agent:text":
+      return "assistant_text";
+    case "agent:tool_use":
+      return "tool_use";
+    case "agent:tool_result":
+      return "tool_result";
+    case "agent:turn_end":
+      return "turn_end";
+    case "agent:error":
+      return "error";
+    case "session:reset_done":
+    case "warn:rate_limited":
+    case "warn:budget_exceeded":
+      return "system";
+    default:
+      return null;
+  }
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+
+if (await distExists()) {
+  // The SPA itself is public — it loads, calls /api/me, and shows the sign-in
+  // screen if the user isn't authenticated. Auth gating happens at the
+  // /api/* and /ws layers, not the static-file layer.
+  mountSpa(app);
+  log.info("serving SPA from web/dist/");
+} else if (process.env.NODE_ENV === "production") {
+  log.warn("NODE_ENV=production but web/dist/ is missing — run `npm run build:web` first");
+}
+
+const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
+  log.info("cloudwise-lab server up", {
+    port: info.port,
+    auth: REQUIRE_AUTH ? "required" : "off",
+    githubOauth: APP_CONFIGURED ? "configured" : "off",
+    nodeEnv: process.env.NODE_ENV ?? "development",
+  });
+});
+
+injectWebSocket(server);

@@ -1,0 +1,50 @@
+{
+  "name": "cloudwise-lab",
+  "version": "0.0.1",
+  "description": "Embedded Claude-Code-style chat experience for Cloudwise Academy course students.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "spike": "tsx spike.ts",
+    "smoke": "tsx smoke.ts",
+    "auth-smoke": "tsx auth-smoke.ts",
+    "phase4-smoke": "tsx phase4-smoke.ts",
+    "prepare-template": "rm -rf templates/astro-basics && mkdir -p templates && cd templates && npm create astro@latest -- ./astro-basics --template basics --typescript strict --no-install --no-git --skip-houston --yes && cd astro-basics && npm install",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:web": "vite --config web/vite.config.ts",
+    "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "build:web": "vite build --config web/vite.config.ts",
+    "start": "tsx server/index.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p web/tsconfig.json"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.126",
+    "@hono/node-server": "^1.13.7",
+    "@hono/node-ws": "^1.0.5",
+    "@octokit/auth-app": "^8.2.0",
+    "@octokit/rest": "^22.0.1",
+    "@types/ws": "^8.18.1",
+    "better-sqlite3": "^12.9.0",
+    "chokidar": "^4.0.3",
+    "dotenv": "^16.4.7",
+    "hono": "^4.6.14",
+    "nanoid": "^5.0.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
