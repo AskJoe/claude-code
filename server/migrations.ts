@@ -149,6 +149,28 @@ const MIGRATIONS: Migration[] = [
       WHERE chat_session_id IS NULL;
     `,
   },
+  {
+    // Magic-link sign-in, password reset, email verification (Phase 7).
+    id: 6,
+    name: "auth-tokens-and-verify",
+    sql: `
+      ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+
+      CREATE TABLE IF NOT EXISTS auth_tokens (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        kind        TEXT NOT NULL,
+        token_hash  TEXT NOT NULL UNIQUE,
+        expires_at  TEXT NOT NULL,
+        used_at     TEXT,
+        created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
+      CREATE INDEX IF NOT EXISTS auth_tokens_user_kind_idx
+        ON auth_tokens(user_id, kind, used_at);
+      CREATE INDEX IF NOT EXISTS auth_tokens_hash_idx
+        ON auth_tokens(token_hash);
+    `,
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

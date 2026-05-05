@@ -4353,3 +4353,66 @@ textarea {
   letter-spacing: 0.04em;
 }
 .cost-table-date { color: var(--text-3); font-family: var(--mono); }
+
+/* ── Phase 7 — verify banner + signin extras ───────────────────────────── */
+
+.verify-banner {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border: 1px solid var(--amber);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  max-width: min(520px, 90vw);
+  font-size: 13px;
+}
+.verify-banner-icon { font-size: 14px; }
+.verify-banner-text { flex: 1; }
+.verify-banner-err {
+  font-size: 11px;
+  color: var(--red);
+  margin-left: 6px;
+}
+.verify-banner-action {
+  background: var(--amber);
+  color: var(--bg-panel);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  font-size: 12px;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+}
+.verify-banner-action:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+.verify-banner-action:disabled { opacity: 0.6; cursor: default; }
+
+.signin-info {
+  background: var(--green-bg);
+  color: var(--green);
+  border: 1px solid var(--green);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.signin-mode-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+.signin-submit-link {
+  text-align: center;
+  text-decoration: none;
+  display: inline-block;
+}

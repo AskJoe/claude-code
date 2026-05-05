@@ -46,6 +46,20 @@ export type UserRow = {
   /** Optional user-supplied system prompt prefix. Prepended to the agent's
    * baked prompt at session start. Capped at 4000 chars at write time. */
   system_prompt: string | null;
+  /** 1 once the user clicked the verify-email link, 0 otherwise. */
+  email_verified: number;
+};
+
+/** Single-use auth token rows. Stored as sha256 hash of the raw token so
+ * a DB compromise doesn't expose live links. */
+export type AuthTokenRow = {
+  id: number;
+  user_id: number;
+  kind: string;
+  token_hash: string;
+  expires_at: string;
+  used_at: string | null;
+  created_at: string;
 };
 
 export type GithubConnectionRow = {
@@ -672,4 +686,66 @@ export function getAdminMetrics(): AdminMetrics {
     signupsByDay,
     topSpenders,
   };
+}
+
+// ── Auth tokens (Phase 7) ───────────────────────────────────────────────────
+
+const sInsertAuthToken = db.prepare<
+  [number, string, string, string],
+  void
+>(
+  `INSERT INTO auth_tokens (user_id, kind, token_hash, expires_at)
+   VALUES (?, ?, ?, ?)`
+);
+const sFindAuthTokenByHash = db.prepare<[string], AuthTokenRow>(
+  `SELECT * FROM auth_tokens WHERE token_hash = ? LIMIT 1`
+);
+const sMarkAuthTokenUsed = db.prepare<[number], void>(
+  `UPDATE auth_tokens
+     SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     WHERE id = ?`
+);
+const sInvalidateUserTokens = db.prepare<[number, string], void>(
+  `UPDATE auth_tokens
+     SET used_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     WHERE user_id = ? AND kind = ? AND used_at IS NULL`
+);
+const sMarkUserVerified = db.prepare<[number], void>(
+  `UPDATE users SET email_verified = 1 WHERE id = ?`
+);
+
+/** Insert a freshly-issued auth token. Caller hashes the raw token first. */
+export function insertAuthToken(input: {
+  userId: number;
+  kind: "verify" | "reset" | "magic";
+  tokenHash: string;
+  expiresAt: Date;
+}): void {
+  sInsertAuthToken.run(
+    input.userId,
+    input.kind,
+    input.tokenHash,
+    input.expiresAt.toISOString()
+  );
+}
+
+export function findAuthTokenByHash(tokenHash: string): AuthTokenRow | null {
+  return sFindAuthTokenByHash.get(tokenHash) ?? null;
+}
+
+export function markAuthTokenUsed(id: number): void {
+  sMarkAuthTokenUsed.run(id);
+}
+
+/** Invalidate all unused tokens of a kind for a user. Useful when a user
+ * requests a fresh reset email — the previous one shouldn't keep working. */
+export function invalidateUserTokens(
+  userId: number,
+  kind: "verify" | "reset" | "magic"
+): void {
+  sInvalidateUserTokens.run(userId, kind);
+}
+
+export function markUserEmailVerified(userId: number): void {
+  sMarkUserVerified.run(userId);
 }

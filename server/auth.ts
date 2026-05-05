@@ -15,16 +15,30 @@
 import { sign, verify } from "hono/jwt";
 import { setCookie, deleteCookie, getCookie } from "hono/cookie";
 import type { Context, Hono, MiddlewareHandler } from "hono";
+import { createHash, randomBytes } from "node:crypto";
 import {
   createUser,
+  findAuthTokenByHash,
   getUserByEmail,
   getUserById,
+  insertAuthToken,
+  invalidateUserTokens,
+  markAuthTokenUsed,
+  markUserEmailVerified,
   setUserDisplayName,
+  setUserPasswordHash,
   setUserSystemPrompt,
   touchUserLogin,
   type UserRow,
 } from "./db.ts";
 import { hashPassword, verifyPassword } from "./passwords.ts";
+import {
+  isSmtpConfigured,
+  magicEmail,
+  resetEmail,
+  sendAuthEmail,
+  verifyEmail,
+} from "./email.ts";
 import { log } from "./log.ts";
 
 const COOKIE = "lab_session";
@@ -45,6 +59,7 @@ export type AuthUser = {
   email: string;
   displayName: string | null;
   isAdmin: boolean;
+  emailVerified: boolean;
 };
 
 declare module "hono" {
@@ -59,6 +74,7 @@ function userFromRow(row: UserRow): AuthUser {
     email: row.email,
     displayName: row.display_name,
     isAdmin: row.is_admin === 1,
+    emailVerified: row.email_verified === 1,
   };
 }
 
@@ -85,6 +101,7 @@ export async function readUser(c: Context): Promise<AuthUser | null> {
       email: "anonymous@local",
       displayName: "Anonymous",
       isAdmin: false,
+      emailVerified: true,
     };
   }
   const cookie = getCookie(c, COOKIE);
@@ -118,6 +135,92 @@ export async function readUserForWs(c: Context): Promise<AuthUser | null> {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// ── Token utilities (Phase 7) ────────────────────────────────────────────────
+
+/** Time-to-live for issued auth tokens, in milliseconds. */
+const TTL = {
+  verify: 1 * 60 * 60 * 1000, // 1 hour
+  reset: 1 * 60 * 60 * 1000, // 1 hour
+  magic: 15 * 60 * 1000, // 15 min — short, since they sign you straight in
+};
+
+/** Generate a fresh raw token + its sha256 hash. The raw goes in the email
+ * link; the hash goes in the DB. */
+function newToken(): { raw: string; hash: string } {
+  const raw = randomBytes(32).toString("base64url");
+  const hash = createHash("sha256").update(raw).digest("hex");
+  return { raw, hash };
+}
+
+function hashToken(raw: string): string {
+  return createHash("sha256").update(raw).digest("hex");
+}
+
+/** Build a `${proto}://${host}` prefix from the incoming request. Honors
+ * X-Forwarded-Proto/Host so links work behind Render's proxy. */
+function publicOrigin(c: Context): string {
+  const forwardedProto = c.req.header("x-forwarded-proto");
+  const forwardedHost = c.req.header("x-forwarded-host");
+  if (forwardedProto && forwardedHost) {
+    return `${forwardedProto.split(",")[0].trim()}://${forwardedHost.split(",")[0].trim()}`;
+  }
+  // Fallback: use the request URL.
+  try {
+    const u = new URL(c.req.url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return process.env.LAB_PUBLIC_URL ?? "http://localhost:3000";
+  }
+}
+
+async function issueAndEmail(args: {
+  c: Context;
+  user: UserRow;
+  kind: "verify" | "reset" | "magic";
+}): Promise<{ token: string; expiresAt: Date }> {
+  // Invalidate prior unused tokens of this kind so the most recent email
+  // is the only working link.
+  invalidateUserTokens(args.user.id, args.kind);
+  const { raw, hash } = newToken();
+  const expiresAt = new Date(Date.now() + TTL[args.kind]);
+  insertAuthToken({
+    userId: args.user.id,
+    kind: args.kind,
+    tokenHash: hash,
+    expiresAt,
+  });
+  const origin = publicOrigin(args.c);
+  if (args.kind === "verify") {
+    const link = `${origin}/auth/verify?token=${encodeURIComponent(raw)}`;
+    await sendAuthEmail(verifyEmail({ to: args.user.email, link }));
+  } else if (args.kind === "reset") {
+    const link = `${origin}/#/auth/reset/${encodeURIComponent(raw)}`;
+    await sendAuthEmail(resetEmail({ to: args.user.email, link }));
+  } else {
+    const link = `${origin}/auth/magic?token=${encodeURIComponent(raw)}`;
+    await sendAuthEmail(magicEmail({ to: args.user.email, link }));
+  }
+  return { token: raw, expiresAt };
+}
+
+/** Look up a raw token; reject if missing, expired, used, or wrong kind. */
+function consumeToken(
+  raw: string,
+  expectedKind: "verify" | "reset" | "magic"
+): { ok: true; userId: number } | { ok: false; error: string } {
+  const hash = hashToken(raw);
+  const row = findAuthTokenByHash(hash);
+  if (!row || row.kind !== expectedKind) {
+    return { ok: false, error: "invalid token" };
+  }
+  if (row.used_at) return { ok: false, error: "token already used" };
+  if (new Date(row.expires_at).getTime() < Date.now()) {
+    return { ok: false, error: "token expired" };
+  }
+  markAuthTokenUsed(row.id);
+  return { ok: true, userId: row.user_id };
+}
+
 export function registerAuthRoutes(app: Hono): void {
   app.post("/api/auth/signup", async (c) => {
     if (!REQUIRE_AUTH) return c.json({ error: "auth disabled in dev" }, 400);
@@ -136,6 +239,16 @@ export function registerAuthRoutes(app: Hono): void {
     const row = createUser({ email, passwordHash, displayName });
     await setSessionCookie(c, row.id);
     log.info("user signup", { userId: row.id, email });
+    // Auto-issue + send verify email. Failure to send doesn't block signup;
+    // the user can request a fresh email from the in-app banner.
+    try {
+      await issueAndEmail({ c, user: row, kind: "verify" });
+    } catch (err: any) {
+      log.warn("verify email send failed at signup", {
+        userId: row.id,
+        err: err?.message ?? String(err),
+      });
+    }
     return c.json({ user: userFromRow(row) });
   });
 
@@ -197,5 +310,145 @@ export function registerAuthRoutes(app: Hono): void {
     }
     setUserSystemPrompt(me.id, value);
     return c.json({ ok: true, systemPrompt: value });
+  });
+
+  // ── Email verification ────────────────────────────────────────────────────
+
+  // Re-send the verify email for the signed-in user. Always returns ok=true
+  // so the caller can show a generic "check your inbox" toast even when the
+  // user's already verified (no-op).
+  app.post("/api/auth/verify-email/send", authMiddleware, async (c) => {
+    const me = c.get("user") as AuthUser;
+    if (me.emailVerified) return c.json({ ok: true, alreadyVerified: true });
+    const row = getUserById(me.id);
+    if (!row) return c.json({ error: "user not found" }, 500);
+    try {
+      await issueAndEmail({ c, user: row, kind: "verify" });
+    } catch (err: any) {
+      log.error("verify resend failed", {
+        userId: me.id,
+        err: err?.message ?? String(err),
+      });
+      return c.json({ error: "could not send email" }, 500);
+    }
+    return c.json({ ok: true });
+  });
+
+  // Verify link target. Issued via email; we redirect to the SPA root once
+  // the token is consumed. Status messages surface via query params so the
+  // SPA can show an inline toast.
+  app.get("/auth/verify", (c) => {
+    const token = c.req.query("token") ?? "";
+    const result = consumeToken(token, "verify");
+    if (!result.ok) {
+      return c.redirect(`/?verify_error=${encodeURIComponent(result.error)}`);
+    }
+    markUserEmailVerified(result.userId);
+    log.info("user email verified", { userId: result.userId });
+    return c.redirect(`/?verified=1`);
+  });
+
+  // ── Password reset ────────────────────────────────────────────────────────
+
+  // Always returns ok=true so the client can't enumerate which emails exist
+  // ("did this fail because the email isn't on file?" leaks user existence).
+  app.post("/api/auth/password-reset/send", async (c) => {
+    if (!REQUIRE_AUTH) return c.json({ error: "auth disabled in dev" }, 400);
+    const body = await c.req.json().catch(() => null);
+    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (!EMAIL_RE.test(email)) {
+      return c.json({ ok: true, smtpConfigured: isSmtpConfigured() });
+    }
+    const row = getUserByEmail(email);
+    if (row && row.disabled !== 1) {
+      try {
+        await issueAndEmail({ c, user: row, kind: "reset" });
+      } catch (err: any) {
+        log.error("reset send failed", {
+          userId: row.id,
+          err: err?.message ?? String(err),
+        });
+      }
+    }
+    return c.json({ ok: true, smtpConfigured: isSmtpConfigured() });
+  });
+
+  // Validate a reset token without consuming it. Used by the SPA's reset
+  // page to check the token is still good before showing the form.
+  app.get("/api/auth/password-reset/check", (c) => {
+    const token = c.req.query("token") ?? "";
+    const hash = hashToken(token);
+    const row = findAuthTokenByHash(hash);
+    if (!row || row.kind !== "reset") return c.json({ valid: false });
+    if (row.used_at) return c.json({ valid: false, reason: "used" });
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return c.json({ valid: false, reason: "expired" });
+    }
+    return c.json({ valid: true });
+  });
+
+  // Confirm and apply a new password. The token is consumed even on a bad
+  // password so attackers can't repeatedly try the SAME token with different
+  // passwords (we only let them try one — get the password right or get a
+  // new email).
+  app.post("/api/auth/password-reset/confirm", async (c) => {
+    if (!REQUIRE_AUTH) return c.json({ error: "auth disabled in dev" }, 400);
+    const body = await c.req.json().catch(() => null);
+    const token = typeof body?.token === "string" ? body.token : "";
+    const password = typeof body?.password === "string" ? body.password : "";
+    if (password.length < 8) {
+      return c.json({ error: "password must be at least 8 chars" }, 400);
+    }
+    const result = consumeToken(token, "reset");
+    if (!result.ok) return c.json({ error: result.error }, 400);
+    const passwordHash = await hashPassword(password);
+    setUserPasswordHash(result.userId, passwordHash);
+    // Reset implies email is real — auto-verify if not already.
+    markUserEmailVerified(result.userId);
+    // Sign the user in.
+    await setSessionCookie(c, result.userId);
+    log.info("password reset", { userId: result.userId });
+    const row = getUserById(result.userId);
+    return c.json({ ok: true, user: row ? userFromRow(row) : null });
+  });
+
+  // ── Magic-link sign-in ────────────────────────────────────────────────────
+
+  // Same enumeration-resistant pattern: always ok=true.
+  app.post("/api/auth/magic-link/send", async (c) => {
+    if (!REQUIRE_AUTH) return c.json({ error: "auth disabled in dev" }, 400);
+    const body = await c.req.json().catch(() => null);
+    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (!EMAIL_RE.test(email)) {
+      return c.json({ ok: true, smtpConfigured: isSmtpConfigured() });
+    }
+    const row = getUserByEmail(email);
+    if (row && row.disabled !== 1) {
+      try {
+        await issueAndEmail({ c, user: row, kind: "magic" });
+      } catch (err: any) {
+        log.error("magic send failed", {
+          userId: row.id,
+          err: err?.message ?? String(err),
+        });
+      }
+    }
+    return c.json({ ok: true, smtpConfigured: isSmtpConfigured() });
+  });
+
+  // Server-side redirect target. Consumes the token, sets the session
+  // cookie, and 302's to the SPA root. Magic-link users implicitly verify
+  // their email — if you can read the inbox, you own the address.
+  app.get("/auth/magic", async (c) => {
+    const token = c.req.query("token") ?? "";
+    const result = consumeToken(token, "magic");
+    if (!result.ok) {
+      return c.redirect(`/?magic_error=${encodeURIComponent(result.error)}`);
+    }
+    markUserEmailVerified(result.userId);
+    touchUserLogin(result.userId);
+    await setSessionCookie(c, result.userId);
+    log.info("magic-link signin", { userId: result.userId });
+    return c.redirect(`/?magic=1`);
   });
 }

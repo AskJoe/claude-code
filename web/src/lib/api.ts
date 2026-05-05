@@ -10,6 +10,7 @@ export type Me = {
     email: string;
     displayName: string | null;
     isAdmin: boolean;
+    emailVerified: boolean;
   } | null;
   requireAuth: boolean;
   githubOauthConfigured: boolean;
@@ -165,6 +166,36 @@ export const api = {
 
   logout: () =>
     request<{ ok: true }>("/api/auth/logout", { method: "POST" }),
+
+  // Email verification, magic-link, password reset (Phase 7)
+  resendVerifyEmail: () =>
+    request<{ ok: true; alreadyVerified?: boolean }>(
+      "/api/auth/verify-email/send",
+      { method: "POST" }
+    ),
+
+  sendMagicLink: (email: string) =>
+    request<{ ok: true; smtpConfigured: boolean }>(
+      "/api/auth/magic-link/send",
+      { method: "POST", body: JSON.stringify({ email }) }
+    ),
+
+  sendPasswordReset: (email: string) =>
+    request<{ ok: true; smtpConfigured: boolean }>(
+      "/api/auth/password-reset/send",
+      { method: "POST", body: JSON.stringify({ email }) }
+    ),
+
+  checkResetToken: (token: string) =>
+    request<{ valid: boolean; reason?: string }>(
+      `/api/auth/password-reset/check?token=${encodeURIComponent(token)}`
+    ),
+
+  confirmPasswordReset: (token: string, password: string) =>
+    request<{ ok: true; user: Me["user"] }>(
+      "/api/auth/password-reset/confirm",
+      { method: "POST", body: JSON.stringify({ token, password }) }
+    ),
 
   // GitHub connection (Phase 13.4)
   githubStatus: () => request<GithubStatus>("/api/github/status"),

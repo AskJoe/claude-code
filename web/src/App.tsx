@@ -7,6 +7,7 @@ import { GitHubBadge } from "./components/GitHubBadge.tsx";
 import { ProjectList } from "./components/ProjectList.tsx";
 import { PublishButton } from "./components/PublishButton.tsx";
 import { SignIn } from "./components/SignIn.tsx";
+import { PasswordReset } from "./components/PasswordReset.tsx";
 import { AdminPage, type AdminTab } from "./components/AdminPage.tsx";
 import { AdminProjectView } from "./components/AdminProjectView.tsx";
 import { EditModeToggle } from "./components/EditModeToggle.tsx";
@@ -37,10 +38,13 @@ type Route =
   | { kind: "list" }
   | { kind: "project"; id: number }
   | { kind: "admin"; tab: AdminTab }
-  | { kind: "admin-project"; id: number };
+  | { kind: "admin-project"; id: number }
+  | { kind: "reset"; token: string };
 
 function parseHash(): Route {
   const h = location.hash.replace(/^#/, "") || "/";
+  const reset = /^\/auth\/reset\/(.+)$/.exec(h);
+  if (reset) return { kind: "reset", token: decodeURIComponent(reset[1]) };
   const adminProj = /^\/admin\/p\/(\d+)$/.exec(h);
   if (adminProj) return { kind: "admin-project", id: Number(adminProj[1]) };
   const adminTab = /^\/admin(?:\/(users|metrics|settings))?$/.exec(h);
@@ -133,7 +137,51 @@ export function App() {
       />
     ) : null;
 
+  // Email-verify banner — shown above every authenticated route until the
+  // user clicks the link in their inbox. Click "Resend" to issue a fresh
+  // email; success swaps the banner copy.
+  const verifyBanner =
+    me?.user && me.user.emailVerified === false ? (
+      <VerifyEmailBanner
+        email={me.user.email}
+        onRefresh={() => api.me().then(setMe)}
+      />
+    ) : null;
+
+  // Read /?verified=1 / ?magic=1 query params on first load and surface a
+  // toast-style banner. Hash changes don't refresh the query, so this fires
+  // once.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get("verified") === "1") {
+      // Refresh me to flip the verify flag.
+      api.me().then(setMe);
+      // Strip the query so a refresh doesn't re-toast.
+      history.replaceState({}, "", location.pathname + location.hash);
+    } else if (params.get("magic") === "1") {
+      api.me().then(setMe);
+      history.replaceState({}, "", location.pathname + location.hash);
+    }
+  }, []);
+
   if (me === null) return <div className="boot-loader">Loading…</div>;
+
+  // Reset link is reachable without being signed in. Confirming the reset
+  // signs the user in via the API; we navigate them to the project list.
+  if (route.kind === "reset") {
+    return (
+      <>
+        <PasswordReset
+          token={route.token}
+          onResetComplete={() => {
+            navigate("/");
+            api.me().then(setMe);
+          }}
+        />
+        {overlay}
+      </>
+    );
+  }
 
   if (me.requireAuth && !me.user) {
     return (
@@ -155,6 +203,7 @@ export function App() {
         />
         {overlay}
         {settingsModal}
+        {verifyBanner}
       </>
     );
   }
@@ -168,6 +217,7 @@ export function App() {
         />
         {overlay}
         {settingsModal}
+        {verifyBanner}
       </>
     );
   }
@@ -192,6 +242,7 @@ export function App() {
         />
         {overlay}
         {settingsModal}
+        {verifyBanner}
       </>
     );
   }
@@ -208,7 +259,71 @@ export function App() {
       />
       {overlay}
       {settingsModal}
+      {verifyBanner}
     </>
+  );
+}
+
+/**
+ * Sticky verify-email banner shown above every authenticated route until
+ * the user clicks the link in their inbox. The "Resend" action issues a
+ * fresh token + email; success swaps to a transient confirmation.
+ */
+function VerifyEmailBanner({
+  email,
+  onRefresh,
+}: {
+  email: string;
+  onRefresh: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const resend = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.resendVerifyEmail();
+      setSent(true);
+      // Re-check verified status after a beat — covers the case where the
+      // user already clicked the link in another tab.
+      setTimeout(onRefresh, 1500);
+    } catch (e: any) {
+      setErr(e?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="verify-banner" role="status">
+      <span className="verify-banner-icon" aria-hidden>
+        ✉
+      </span>
+      <span className="verify-banner-text">
+        {sent
+          ? `Sent. Check ${email} for the verify link.`
+          : `Verify your email — we sent a link to ${email}.`}
+      </span>
+      {err && <span className="verify-banner-err">{err}</span>}
+      {!sent && (
+        <button
+          type="button"
+          className="verify-banner-action"
+          onClick={resend}
+          disabled={busy}
+        >
+          {busy ? "Sending…" : "Resend"}
+        </button>
+      )}
+      <button
+        type="button"
+        className="verify-banner-action"
+        onClick={onRefresh}
+        title="I clicked the link — refresh status"
+      >
+        I verified
+      </button>
+    </div>
   );
 }
 
