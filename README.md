@@ -48,7 +48,8 @@ Visit `http://localhost:3101/` — single-port single-process deployment.
 
 ### Production auth
 
-Auth is **off** by default (dev mode). Turn it on by setting:
+Auth is **off** by default in development. Production refuses to start unless
+this is set:
 
 ```bash
 LAB_SESSION_SECRET=$(openssl rand -hex 32)
@@ -72,7 +73,10 @@ LAB_SESSION_SECRET=test-secret-do-not-use-in-prod npm run auth-smoke
 A `render.yaml` blueprint is included. Push to GitHub, hit "New → Blueprint" in Render, then in the dashboard set:
 
 - `ANTHROPIC_API_KEY` — your real Anthropic key
-- `LAB_SESSION_SECRET` — cookie signing secret for lab sessions
+
+The blueprint generates `LAB_SESSION_SECRET` automatically if the Render service
+doesn't already have one. If you manage the service manually instead of through
+the blueprint, set `LAB_SESSION_SECRET` yourself.
 
 The blueprint mounts a persistent disk at `/var/data` and sets `LAB_DATA_DIR=/var/data`, so SQLite, project files, and chat history survive deploys/restarts. Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan plus persistent disk storage, fits ~30 concurrent students.
 

@@ -8,8 +8,9 @@
  *
  * Required env: LAB_SESSION_SECRET (`openssl rand -hex 32`).
  *
- * If LAB_SESSION_SECRET isn't set, auth runs in dev mode: every request gets
- * a synthetic anonymous user. Don't ship to prod without setting it.
+ * If LAB_SESSION_SECRET isn't set in development, auth runs in dev mode: every
+ * request gets a synthetic anonymous user. Production fails closed instead of
+ * serving an anonymous shared account.
  */
 
 import { sign, verify } from "hono/jwt";
@@ -49,6 +50,12 @@ const IS_PROD = process.env.NODE_ENV === "production";
 export const REQUIRE_AUTH = !!SESSION_SECRET;
 
 if (!REQUIRE_AUTH) {
+  if (IS_PROD) {
+    log.error("LAB_SESSION_SECRET not set — refusing to start production with auth disabled", {
+      hint: "Set LAB_SESSION_SECRET to `openssl rand -hex 32` in the Render service environment",
+    });
+    process.exit(1);
+  }
   log.warn("LAB_SESSION_SECRET not set — auth is OFF (dev mode)", {
     hint: "openssl rand -hex 32",
   });
