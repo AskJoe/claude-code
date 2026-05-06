@@ -9,7 +9,7 @@
     "smoke": "tsx smoke.ts",
     "auth-smoke": "tsx auth-smoke.ts",
     "phase4-smoke": "tsx phase4-smoke.ts",
-    "prepare-template": "rm -rf templates/astro-basics && mkdir -p templates && cd templates && npm create astro@latest -- ./astro-basics --template basics --typescript strict --no-install --no-git --skip-houston --yes && cd astro-basics && npm install",
+    "prepare-template": "npm install --prefix templates/astro-basics",
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",

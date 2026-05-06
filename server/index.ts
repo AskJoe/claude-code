@@ -47,6 +47,7 @@ import { log } from "./log.ts";
 import {
   createProjectFor,
   deleteProjectAndDir,
+  ensureProjectStarter,
   getProjectFor,
   listProjectsFor,
   projectDir,
@@ -902,6 +903,7 @@ app.get(
         return;
       }
       project = publicProject(row);
+      await ensureProjectStarter(project.id);
 
       // Resolve the active chat session for this project. New projects get
       // one created on the spot. Previous chats live archived in the

@@ -8,5 +8,6 @@ sessions/
 dist/
 .next/
 secrets/
-templates/
+templates/*/node_modules/
+templates/*/.astro/
 db/

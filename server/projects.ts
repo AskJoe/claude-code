@@ -52,26 +52,54 @@ export async function createProjectFor(
     displayName: cleanName,
   });
 
-  const dir = projectDir(project.id);
-  await mkdir(dir, { recursive: true });
-
-  // Copy Astro starter into the project dir.
   try {
-    const t = await stat(TEMPLATE_DIR);
-    if (t.isDirectory()) {
-      await cp(TEMPLATE_DIR, dir, { recursive: true, errorOnExist: false });
-    } else {
-      log.warn("template dir not a directory; project dir will be empty");
-    }
-  } catch (err: any) {
-    if (err.code !== "ENOENT") throw err;
-    log.warn("astro template missing; project dir will be empty", {
-      hint: "run `npm run prepare-template`",
-    });
+    await ensureProjectStarter(project.id);
+  } catch (err) {
+    dbDeleteProject(project.id);
+    throw err;
   }
 
   log.info("project created", { projectId: project.id, userId, slug });
   return project;
+}
+
+/**
+ * Ensures a project directory contains the Astro starter. This is used both on
+ * create and on open so old projects created while the template was missing can
+ * self-heal without replacing user files.
+ */
+export async function ensureProjectStarter(projectId: number): Promise<void> {
+  const dir = projectDir(projectId);
+  await mkdir(dir, { recursive: true });
+
+  try {
+    await stat(join(dir, "package.json"));
+    return;
+  } catch (err: any) {
+    if (err.code !== "ENOENT") throw err;
+  }
+
+  try {
+    const t = await stat(TEMPLATE_DIR);
+    if (t.isDirectory()) {
+      await cp(TEMPLATE_DIR, dir, {
+        recursive: true,
+        force: false,
+        errorOnExist: false,
+      });
+    } else {
+      throw new Error(`template path is not a directory: ${TEMPLATE_DIR}`);
+    }
+  } catch (err: any) {
+    if (err.code === "ENOENT") {
+      throw new Error(
+        `Astro starter template missing at ${TEMPLATE_DIR}; run npm run prepare-template during build`
+      );
+    }
+    throw err;
+  }
+
+  log.info("project starter hydrated", { projectId });
 }
 
 export async function deleteProjectAndDir(projectId: number): Promise<void> {

@@ -17,10 +17,13 @@
  */
 
 import { spawn } from "node:child_process";
+import { stat } from "node:fs/promises";
+import { join } from "node:path";
 import { log } from "./log.ts";
 
 const DEBOUNCE_MS = 8_000;
 const BUILD_TIMEOUT_MS = 120_000;
+const INSTALL_TIMEOUT_MS = 180_000;
 const LOG_BUFFER_MAX = 200;
 
 export type BuildStatus = "idle" | "building" | "ok" | "error";
@@ -80,17 +83,30 @@ export function startAutoBuilder(input: {
     input.onStateChange?.({ ...state });
   };
 
-  const runBuild = (): Promise<void> => {
-    return new Promise<void>((resolve) => {
-      if (disposed) return resolve();
-      setState({ status: "building", lastError: null });
+  const fileExists = async (path: string): Promise<boolean> => {
+    try {
+      await stat(path);
+      return true;
+    } catch (err: any) {
+      if (err.code === "ENOENT") return false;
+      throw err;
+    }
+  };
+
+  const runLoggedCommand = (
+    command: string,
+    args: string[],
+    timeoutMs: number
+  ): Promise<{ code: number | null; output: string; timedOut: boolean }> => {
+    return new Promise((resolve) => {
+      if (disposed) return resolve({ code: 0, output: "", timedOut: false });
       pushLog({
         stream: "stdout",
-        chunk: `$ npm run build (cwd: ${input.projectDir})\n`,
+        chunk: `$ ${command} ${args.join(" ")} (cwd: ${input.projectDir})\n`,
         ts: Date.now(),
       });
 
-      const child = spawn("npm", ["run", "build"], {
+      const child = spawn(command, args, {
         cwd: input.projectDir,
         env: { ...process.env, CI: "1", FORCE_COLOR: "0" },
       });
@@ -104,7 +120,7 @@ export function startAutoBuilder(input: {
         try {
           child.kill("SIGKILL");
         } catch {}
-      }, BUILD_TIMEOUT_MS);
+      }, timeoutMs);
 
       child.stdout.on("data", (data: Buffer) => {
         const text = data.toString("utf-8");
@@ -126,39 +142,72 @@ export function startAutoBuilder(input: {
 
       child.on("error", (err) => {
         clearTimeout(killTimer);
-        if (disposed) return resolve();
+        if (disposed) return resolve({ code: 0, output: "", timedOut });
         const msg = err?.message ?? String(err);
         pushLog({ stream: "stderr", chunk: msg + "\n", ts: Date.now() });
-        setState({ status: "error", lastError: msg });
-        log.error("auto-build spawn failed", {
-          projectId: input.projectId,
-          msg: msg.slice(0, 200),
-        });
-        resolve();
+        resolve({ code: null, output: msg, timedOut });
       });
 
       child.on("close", (code) => {
         clearTimeout(killTimer);
-        if (disposed) return resolve();
-        if (code === 0) {
-          setState({ status: "ok", lastBuildAt: Date.now(), lastError: null });
-          log.info("auto-build ok", { projectId: input.projectId });
-        } else {
-          const combined = (stderrBuf + "\n" + stdoutBuf).trim();
-          const trimmed =
-            combined.length > 4000 ? combined.slice(-4000) : combined;
-          const reason = timedOut
-            ? `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s\n${trimmed}`
-            : trimmed || `npm run build exited with code ${code}`;
-          setState({ status: "error", lastError: reason });
-          log.error("auto-build failed", {
-            projectId: input.projectId,
-            code,
-            msg: reason.slice(0, 200),
-          });
-        }
-        resolve();
+        if (disposed) return resolve({ code, output: "", timedOut });
+        const combined = (stderrBuf + "\n" + stdoutBuf).trim();
+        const output = combined.length > 4000 ? combined.slice(-4000) : combined;
+        resolve({ code, output, timedOut });
       });
+    });
+  };
+
+  const ensureDependencies = async (): Promise<void> => {
+    const packageJson = join(input.projectDir, "package.json");
+    if (!(await fileExists(packageJson))) {
+      throw new Error(`project package.json missing at ${packageJson}`);
+    }
+    const astroBin = join(input.projectDir, "node_modules", ".bin", "astro");
+    if (await fileExists(astroBin)) return;
+    const result = await runLoggedCommand("npm", ["install"], INSTALL_TIMEOUT_MS);
+    if (result.code !== 0) {
+      const reason = result.timedOut
+        ? `npm install timed out after ${INSTALL_TIMEOUT_MS / 1000}s\n${result.output}`
+        : result.output || `npm install exited with code ${result.code}`;
+      throw new Error(reason);
+    }
+  };
+
+  const runBuild = async (): Promise<void> => {
+    if (disposed) return;
+    setState({ status: "building", lastError: null });
+
+    try {
+      await ensureDependencies();
+    } catch (err: any) {
+      if (disposed) return;
+      const msg = err?.message ?? String(err);
+      pushLog({ stream: "stderr", chunk: msg + "\n", ts: Date.now() });
+      setState({ status: "error", lastError: msg });
+      log.error("auto-build dependency install failed", {
+        projectId: input.projectId,
+        msg: msg.slice(0, 200),
+      });
+      return;
+    }
+
+    const result = await runLoggedCommand("npm", ["run", "build"], BUILD_TIMEOUT_MS);
+    if (disposed) return;
+    if (result.code === 0) {
+      setState({ status: "ok", lastBuildAt: Date.now(), lastError: null });
+      log.info("auto-build ok", { projectId: input.projectId });
+      return;
+    }
+
+    const reason = result.timedOut
+      ? `Build timed out after ${BUILD_TIMEOUT_MS / 1000}s\n${result.output}`
+      : result.output || `npm run build exited with code ${result.code}`;
+    setState({ status: "error", lastError: reason });
+    log.error("auto-build failed", {
+      projectId: input.projectId,
+      code: result.code,
+      msg: reason.slice(0, 200),
     });
   };
 

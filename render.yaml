@@ -19,7 +19,7 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    buildCommand: npm ci --include=dev && npm run build:web
+    buildCommand: npm ci --include=dev && npm run prepare-template && npm run build:web
     startCommand: npm start
     healthCheckPath: /health
     envVars:
