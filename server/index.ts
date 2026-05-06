@@ -511,9 +511,19 @@ app.post("/api/projects/:id/builder/restart", authMiddleware, async (c) => {
   const existing = liveBuilders.get(id);
   const e2bRuntime = liveE2BRuntimes.get(id);
   if (E2B_RUNTIME_ENABLED && e2bRuntime) {
-    await e2bRuntime.restart();
-    log.info("e2b preview runtime restarted", { projectId: id, userId: user.id });
-    return c.json({ ok: true });
+    try {
+      await e2bRuntime.restart();
+      log.info("e2b preview runtime restarted", { projectId: id, userId: user.id });
+      return c.json({ ok: true });
+    } catch (err: any) {
+      const message = err?.message ?? String(err);
+      log.error("e2b preview runtime restart failed", {
+        projectId: id,
+        userId: user.id,
+        msg: message.slice(0, 200),
+      });
+      return c.json({ ok: false, reason: message }, 500);
+    }
   }
 
   if (!existing) {
@@ -1024,8 +1034,9 @@ app.get(
 
       // Replay buffered build log lines so a reconnected client sees the tail
       // of the most recent build without a fresh rebuild.
-      if (autoBuilder) {
-        for (const line of autoBuilder.logBuffer()) {
+      const logBuffer = autoBuilder?.logBuffer() ?? e2bRuntime?.logBuffer() ?? [];
+      if (logBuffer.length > 0) {
+        for (const line of logBuffer) {
           emitRaw({
             type: "build:log",
             stream: line.stream,

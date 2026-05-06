@@ -11,6 +11,7 @@ const INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
 const START_TIMEOUT_MS = 2 * 60 * 1000;
 const SYNC_DEBOUNCE_MS = 250;
 const WRITE_BATCH_SIZE = 25;
+const LOG_BUFFER_MAX = 200;
 
 const SKIP_DIRS = new Set(["node_modules", "dist", ".astro", ".git", ".vscode"]);
 const SKIP_FILES = new Set([".DS_Store"]);
@@ -23,6 +24,7 @@ export type E2BState = {
 
 export type E2BPreviewRuntime = {
   status: () => E2BState;
+  logBuffer: () => Array<{ stream: "stdout" | "stderr"; chunk: string; ts: number }>;
   proxy: (wildcard: string, sourceUrl: URL) => Promise<Response>;
   notifyFsEvent: (
     kind: "add" | "change" | "unlink" | "addDir" | "unlinkDir",
@@ -64,11 +66,16 @@ class E2BRuntime implements E2BPreviewRuntime {
     lastBuildAt: null,
     lastError: null,
   };
+  private readonly logs: Array<{ stream: "stdout" | "stderr"; chunk: string; ts: number }> = [];
 
   constructor(private readonly input: RuntimeInput) {}
 
   status(): E2BState {
     return { ...this.state };
+  }
+
+  logBuffer() {
+    return this.logs.slice();
   }
 
   async start(): Promise<void> {
@@ -117,7 +124,11 @@ class E2BRuntime implements E2BPreviewRuntime {
   }
 
   async restart(): Promise<void> {
-    if (!this.sandbox) throw new Error("E2B sandbox is not ready");
+    if (!this.sandbox) {
+      this.pushLog("stderr", "E2B sandbox was not ready; creating a fresh sandbox...\n");
+      await this.start();
+      return;
+    }
     this.setState({ status: "building", lastError: null });
     await this.stopDevServer();
     await this.fullSync();
@@ -209,7 +220,12 @@ class E2BRuntime implements E2BPreviewRuntime {
   }
 
   private pushLog(stream: "stdout" | "stderr", chunk: string) {
-    this.input.onLog?.({ stream, chunk, ts: Date.now() });
+    const line = { stream, chunk, ts: Date.now() };
+    this.logs.push(line);
+    if (this.logs.length > LOG_BUFFER_MAX) {
+      this.logs.splice(0, this.logs.length - LOG_BUFFER_MAX);
+    }
+    this.input.onLog?.(line);
   }
 
   private scheduleSync() {

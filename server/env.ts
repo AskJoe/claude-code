@@ -20,6 +20,11 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
+if (process.env.LAB_RUNTIME === "e2b" && !process.env.E2B_API_KEY) {
+  console.error("missing E2B_API_KEY while LAB_RUNTIME=e2b");
+  process.exit(1);
+}
+
 const isolatedConfig = mkdtempSync(join(tmpdir(), "cloudwise-lab-"));
 process.env.CLAUDE_CONFIG_DIR = isolatedConfig;
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
