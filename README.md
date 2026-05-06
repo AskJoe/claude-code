@@ -46,30 +46,25 @@ NODE_ENV=production npm start  # Hono serves API + WS + SPA on one port (3101)
 
 Visit `http://localhost:3101/` — single-port single-process deployment.
 
-### SSO from your training platform
+### Production auth
 
 Auth is **off** by default (dev mode). Turn it on by setting:
 
 ```bash
-LAB_REQUIRE_AUTH=1
-LAB_JWT_SECRET=$(openssl rand -hex 32)   # share with the training platform
+LAB_SESSION_SECRET=$(openssl rand -hex 32)
 ```
 
 Flow:
-1. Training platform mints a JWT (HS256, signed with `LAB_JWT_SECRET`):
-   ```js
-   { sub: "<student-id>", name: "<display name>", iat, exp }
-   ```
-2. Platform redirects student to `https://lab.cloudwise.academy/?token=<jwt>`.
-3. Lab verifies signature, sets `lab_session` cookie (HttpOnly, SameSite=Lax, Secure in prod), redirects to clean URL.
-4. All subsequent HTTP + WS requests gate on the cookie.
+1. Students sign up, sign in, or use a magic link.
+2. Lab sets a signed `lab_session` cookie with a server-enforced `exp`.
+3. All protected HTTP routes, WebSocket sessions, and preview file requests gate on that cookie.
 
 Run the auth smoke to verify:
 
 ```bash
-LAB_REQUIRE_AUTH=1 LAB_JWT_SECRET=test-secret-do-not-use-in-prod NODE_ENV=production npm start
+LAB_SESSION_SECRET=test-secret-do-not-use-in-prod NODE_ENV=production npm start
 # in another terminal:
-LAB_JWT_SECRET=test-secret-do-not-use-in-prod npm run auth-smoke
+LAB_SESSION_SECRET=test-secret-do-not-use-in-prod npm run auth-smoke
 ```
 
 ### Deploy to Render
@@ -77,9 +72,9 @@ LAB_JWT_SECRET=test-secret-do-not-use-in-prod npm run auth-smoke
 A `render.yaml` blueprint is included. Push to GitHub, hit "New → Blueprint" in Render, then in the dashboard set:
 
 - `ANTHROPIC_API_KEY` — your real Anthropic key
-- `LAB_JWT_SECRET` — the shared secret (same value the training platform uses to mint JWTs)
+- `LAB_SESSION_SECRET` — cookie signing secret for lab sessions
 
-Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan, fits ~30 concurrent students.
+The blueprint mounts a persistent disk at `/var/data` and sets `LAB_DATA_DIR=/var/data`, so SQLite, project files, and chat history survive deploys/restarts. Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan plus persistent disk storage, fits ~30 concurrent students.
 
 ### Architecture (Phase 1)
 
@@ -87,14 +82,14 @@ Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7
 Browser ── WebSocket ──► Hono /ws ──► Agent SDK ──► claude CLI ──► Anthropic API
    ▲                       │
    │                       ▼
-   └── HTTP /preview/:sessionId/* ── sessions/{id}/{file}
+   └── HTTP /preview/:projectId/* ── sessions/{projectId}/{file}
                             ▲
                             │ chokidar watcher
                             ▼
                         files:changed event
 ```
 
-One WebSocket connection = one session = one `sessions/{id}/` scratch dir. Closing the socket disposes the agent and removes the session dir. Agent writes go through Read/Write/Edit/Bash with `cwd` pinned to the session dir; the chokidar watcher pushes file tree updates back to the browser; clicking a file in the tree loads it into the preview iframe via `/preview/{sessionId}/{path}`.
+Each project has a DB row and a persistent `sessions/{projectId}/` working directory. Closing the socket disposes the agent and watcher, but the project files stay on disk. Agent writes go through Read/Write/Edit/Bash with `cwd` pinned to the project dir; the chokidar watcher pushes file tree updates back to the browser; clicking a file in the tree loads it into the preview iframe via `/preview/{projectId}/{path}` after the same auth/ownership checks as the project API.
 
 ## Phase 0 — running the spike
 

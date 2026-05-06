@@ -1,5 +1,6 @@
 /**
- * SQLite-backed storage. Lives at `cloudwise-lab/db/lab.sqlite`.
+ * SQLite-backed storage. Defaults to `cloudwise-lab/db/lab.sqlite`; set
+ * LAB_DATA_DIR to put DB + project files on persistent storage in production.
  *
  * Tables:
  *   - users               email + password identity
@@ -13,14 +14,10 @@
 
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 import { runMigrations } from "./migrations.ts";
+import { DB_PATH } from "./paths.ts";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const DB_PATH = resolve(__dirname, "..", "db", "lab.sqlite");
 mkdirSync(dirname(DB_PATH), { recursive: true });
 
 export const db = new Database(DB_PATH);

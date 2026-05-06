@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel.tsx";
 import { CodeView } from "./components/CodeView.tsx";
-import { PreviewPane } from "./components/PreviewPane.tsx";
+import { PreviewPane, type PreviewTextEdit } from "./components/PreviewPane.tsx";
 import { BuildLogDrawer } from "./components/BuildLogDrawer.tsx";
 import { GitHubBadge } from "./components/GitHubBadge.tsx";
 import { ProjectList } from "./components/ProjectList.tsx";
@@ -399,49 +399,19 @@ function Lab({
     setProject(projects.find((p) => p.id === projectId) ?? null);
   };
 
-  // Broadcast edit-mode state into the preview iframe whenever it toggles.
-  useEffect(() => {
-    document.querySelectorAll("iframe").forEach((iframe) => {
-      try {
-        iframe.contentWindow?.postMessage(
-          { type: "lab:edit-mode", on: editMode },
-          "*"
-        );
-      } catch {}
-    });
-  }, [editMode]);
+  const handlePreviewTextEdit = (edit: PreviewTextEdit) => {
+    const tag = edit.elementTag;
+    const cls = edit.elementClass;
+    const ctx = tag
+      ? `It's inside a <${tag}${cls ? ` class="${cls}"` : ""}> element.`
+      : "";
+    const prompt =
+      `In the project source under \`src/\`, change the text "${edit.oldText}" to "${edit.newText}". ` +
+      `${ctx} Find the matching source file (likely src/pages/, src/components/, or src/layouts/) ` +
+      `and update only that occurrence — don't change anything else.`;
+    lab.send(prompt);
+  };
 
-  // Listen for messages from the preview iframe:
-  //   - lab:edit-mode-toggle  → user pressed Cmd+E inside the iframe; flip our state
-  //   - lab:edit-text         → user saved an inline edit; route it to the agent
-  useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      const data = e.data;
-      if (!data || typeof data !== "object") return;
-      if (data.type === "lab:edit-mode-toggle") {
-        setEditMode((m) => !m);
-        return;
-      }
-      if (data.type === "lab:edit-text") {
-        const oldText = String(data.oldText ?? "").trim();
-        const newText = String(data.newText ?? "").trim();
-        if (!oldText || !newText || oldText === newText) return;
-        const tag = String(data.elementTag ?? "").trim();
-        const cls = String(data.elementClass ?? "").trim();
-        const ctx = tag
-          ? `It's inside a <${tag}${cls ? ` class="${cls}"` : ""}> element.`
-          : "";
-        const prompt =
-          `In the project source under \`src/\`, change the text "${oldText}" to "${newText}". ` +
-          `${ctx} Find the matching source file (likely src/pages/, src/components/, or src/layouts/) ` +
-          `and update only that occurrence — don't change anything else.`;
-        lab.send(prompt);
-        return;
-      }
-    };
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [lab]);
 
   // Cmd/Ctrl+E at the lab level toggles edit mode (works even when the
   // iframe doesn't have focus). ⌘P opens quick file picker. ⌘⇧F opens
@@ -692,6 +662,9 @@ function Lab({
                 previewBase={lab.previewBase}
                 reloadKey={reloadKey}
                 files={lab.files}
+                editMode={editMode}
+                onToggleEditMode={() => setEditMode((m) => !m)}
+                onEditText={handlePreviewTextEdit}
               />
             ) : (
               <CodeView

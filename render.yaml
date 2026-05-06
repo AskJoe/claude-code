@@ -5,10 +5,10 @@
 #   2. In Render: New → Blueprint → connect the repo.
 #   3. Set the secret env vars in the Render dashboard:
 #        ANTHROPIC_API_KEY  — your real key
-#        LAB_JWT_SECRET     — `openssl rand -hex 32` value, shared with your
-#                             training platform
+#        LAB_SESSION_SECRET — `openssl rand -hex 32` value used to sign
+#                             lab_session cookies
 #   4. Add a custom domain: lab.cloudwise.academy → ALIAS the Render URL.
-#   5. Hand the JWT secret to the training platform so it can mint tokens.
+#   5. Run `npm run auth-smoke` against the deployed service before sharing it.
 #
 # Cost: starter web service is $7/mo. Bump to standard when you exceed
 # ~30 concurrent students.
@@ -19,21 +19,27 @@ services:
     runtime: node
     plan: starter
     region: oregon
-    buildCommand: npm install && npm run build:web
+    buildCommand: npm ci && npm run build:web
     startCommand: npm start
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 22
       - key: PORT
         value: "10000"
-      - key: LAB_REQUIRE_AUTH
-        value: "1"
+      - key: LAB_DATA_DIR
+        value: /var/data
       - key: LAB_MODEL
         value: claude-sonnet-4-6
-      # Set ANTHROPIC_API_KEY and LAB_JWT_SECRET in the dashboard (sync: false
+      # Set ANTHROPIC_API_KEY and LAB_SESSION_SECRET in the dashboard (sync: false
       # so they're not committed to the blueprint).
       - key: ANTHROPIC_API_KEY
         sync: false
-      - key: LAB_JWT_SECRET
+      - key: LAB_SESSION_SECRET
         sync: false
+    disk:
+      name: lab-data
+      mountPath: /var/data
+      sizeGB: 10

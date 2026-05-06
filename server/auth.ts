@@ -94,8 +94,9 @@ function userFromRow(row: UserRow): AuthUser {
 }
 
 async function setSessionCookie(c: Context, userId: number): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
   const token = await sign(
-    { uid: userId, iat: Math.floor(Date.now() / 1000) },
+    { uid: userId, iat: now, exp: now + COOKIE_MAX_AGE_SEC },
     SESSION_SECRET,
     "HS256"
   );
@@ -129,6 +130,8 @@ export async function readUser(c: Context): Promise<AuthUser | null> {
   }
   const uid = typeof payload.uid === "number" ? payload.uid : null;
   if (uid == null) return null;
+  const exp = typeof payload.exp === "number" ? payload.exp : null;
+  if (exp == null || exp <= Math.floor(Date.now() / 1000)) return null;
   const row = getUserById(uid);
   if (!row) return null;
   if (row.disabled === 1) return null; // disabled accounts can't act

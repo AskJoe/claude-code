@@ -639,9 +639,12 @@ const MIME: Record<string, string> = {
   ".md": "text/plain; charset=utf-8",
 };
 
-app.get("/preview/:projectId/*", async (c) => {
+app.get("/preview/:projectId/*", authMiddleware, async (c) => {
+  const user = c.get("user");
   const projectId = Number(c.req.param("projectId"));
   if (!Number.isFinite(projectId)) return c.text("bad project id", 400);
+  const project = getProjectFor(user.id, projectId);
+  if (!project) return c.text("not found", 404);
   const session = liveSessions.get(projectId);
   if (!session) return c.text("project not open", 404);
 

@@ -8,6 +8,16 @@ type Props = {
   /** Live file tree from useLabSession — used to derive Astro routes for
    *  the page picker dropdown. */
   files?: FileNode[];
+  editMode?: boolean;
+  onToggleEditMode?: () => void;
+  onEditText?: (edit: PreviewTextEdit) => void;
+};
+
+export type PreviewTextEdit = {
+  oldText: string;
+  newText: string;
+  elementTag: string;
+  elementClass: string;
 };
 
 type PageOption = {
@@ -103,6 +113,9 @@ export function PreviewPane({
   previewBase,
   reloadKey = "0",
   files,
+  editMode = false,
+  onToggleEditMode,
+  onEditText,
 }: Props) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const [bump, setBump] = useState(0);
@@ -124,13 +137,57 @@ export function PreviewPane({
     if (!stillExists) setCurrentRoute("");
   }, [pages, currentRoute]);
 
-  // Listen for `lab:console` messages from the preview iframe. Other
-  // message types (lab:edit-mode-toggle, lab:edit-text) are handled by the
-  // Lab component and must not be touched here.
+  // index when home, otherwise navigate to /<route> — server resolves
+  // /preview/<id>/<route> to dist/<route>/index.html (Astro's default
+  // folder-mode build) or dist/<route>.html (file-mode).
+  const src = !previewBase
+    ? ""
+    : currentRoute === ""
+      ? `${previewBase}index.html`
+      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
+  const externalUrl = !previewBase
+    ? ""
+    : currentRoute === ""
+      ? previewBase
+      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
+
+  const postEditMode = useCallback(() => {
+    if (!src) return;
+    try {
+      iframeRef.current?.contentWindow?.postMessage(
+        { type: "lab:edit-mode", on: editMode },
+        "*"
+      );
+    } catch {}
+  }, [editMode, src]);
+
+  useEffect(() => {
+    postEditMode();
+  }, [postEditMode]);
+
+  // Listen only to messages from the preview iframe we own. Sandboxed previews
+  // have origin "null", so event.source is the reliable boundary here.
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
+      if (e.source !== iframeRef.current?.contentWindow) return;
       const data = e.data;
       if (!data || typeof data !== "object") return;
+      if (data.type === "lab:edit-mode-toggle") {
+        onToggleEditMode?.();
+        return;
+      }
+      if (data.type === "lab:edit-text") {
+        const oldText = String(data.oldText ?? "").trim();
+        const newText = String(data.newText ?? "").trim();
+        if (!oldText || !newText || oldText === newText) return;
+        onEditText?.({
+          oldText,
+          newText,
+          elementTag: String(data.elementTag ?? "").trim(),
+          elementClass: String(data.elementClass ?? "").trim(),
+        });
+        return;
+      }
       if (data.type !== "lab:console") return;
       const level = (data.level as ConsoleLevel) ?? "log";
       const argsIn = Array.isArray(data.args) ? data.args : [];
@@ -150,7 +207,7 @@ export function PreviewPane({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [onEditText, onToggleEditMode]);
 
   // Clear the log when the iframe reloads so the drawer shows fresh output
   // for the new page rather than piling indefinitely across builds.
@@ -167,15 +224,6 @@ export function PreviewPane({
   if (!previewBase) {
     return <div className="preview-empty">connecting…</div>;
   }
-  // index when home, otherwise navigate to /<route> — server resolves
-  // /preview/<id>/<route> to dist/<route>/index.html (Astro's default
-  // folder-mode build) or dist/<route>.html (file-mode).
-  const src =
-    currentRoute === ""
-      ? `${previewBase}index.html`
-      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
-  const externalUrl =
-    currentRoute === "" ? previewBase : `${previewBase}${currentRoute.replace(/^\//, "")}`;
 
   return (
     <div className="preview">
@@ -224,7 +272,8 @@ export function PreviewPane({
         key={`${src}-${reloadKey}-${bump}`}
         className="preview-frame"
         src={src}
-        sandbox="allow-scripts allow-forms allow-same-origin"
+        sandbox="allow-scripts allow-forms"
+        onLoad={postEditMode}
         title="lab preview"
       />
       {consoleOpen && (

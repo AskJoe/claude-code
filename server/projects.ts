@@ -10,8 +10,7 @@
  */
 
 import { cp, mkdir, rm, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import {
   createProject,
@@ -20,13 +19,8 @@ import {
   listProjects,
   type ProjectRow,
 } from "./db.ts";
-import { TEMPLATE_DIR } from "./sessions.ts";
+import { SESSIONS_ROOT, TEMPLATE_DIR } from "./paths.ts";
 import { log } from "./log.ts";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const SESSIONS_ROOT = resolve(__dirname, "..", "sessions");
 
 /** Filesystem path where this project's working files live. */
 export function projectDir(projectId: number): string {

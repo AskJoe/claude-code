@@ -12,15 +12,8 @@
 
 import chokidar, { type FSWatcher } from "chokidar";
 import { mkdir, readdir, stat } from "node:fs/promises";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join, relative, resolve, sep } from "node:path";
 import type { FileNode } from "../shared/events.ts";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-export const SESSIONS_ROOT = resolve(__dirname, "..", "sessions");
-export const TEMPLATE_DIR = resolve(__dirname, "..", "templates", "astro-basics");
 
 const HIDDEN_NAMES = new Set([
   "node_modules",

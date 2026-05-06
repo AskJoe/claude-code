@@ -13,6 +13,6 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["server/**/*", "shared/**/*", "spike.ts"],
+  "include": ["server/**/*", "shared/**/*", "spike.ts", "smoke.ts", "auth-smoke.ts", "phase4-smoke.ts"],
   "exclude": ["node_modules", "scratch", "sessions", "web"]
 }
