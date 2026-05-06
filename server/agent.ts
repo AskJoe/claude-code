@@ -232,9 +232,8 @@ export function startAgent(
   const executorModelId = resolveExecutorModelId(executorChoice);
   const advisorModelId = resolveAdvisorModelId(startOpts.advisor ?? null);
   // Two layers: the user picked a +advisor preset AND the env flag opts in.
-  // When the user picked it but the runtime is gated, we'll surface a
-  // system message after session start so they know the executor is still
-  // doing the work alone.
+  // If the user picked it but the runtime is gated, keep that warning in
+  // server logs instead of spamming the student's chat.
   const advisorRequested = advisorModelId !== null;
   const advisorActive = advisorRequested && ADVISOR_RUNTIME_ENABLED;
 
@@ -291,21 +290,10 @@ export function startAgent(
 
   const stream = query({ prompt: inbox.iterable, options });
 
-  // If the user picked a +advisor preset but the runtime is gated, surface
-  // a one-line system note so they understand why the cost meter won't
-  // split executor/advisor and why the chat behaves like the non-advisor
-  // sibling preset.
   if (advisorRequested && !advisorActive) {
-    queueMicrotask(() => {
-      emit({
-        type: "system:notice",
-        text:
-          "Advisor preset is selected but disabled at the server level " +
-          "(LAB_ADVISOR_ENABLED is unset). The executor model will run alone " +
-          "this session. Switch to a non-advisor preset (Frugal / Default / Maximum) " +
-          "to remove this notice.",
-      });
-    });
+    console.warn(
+      "[agent] advisor preset ignored because LAB_ADVISOR_ENABLED is unset"
+    );
   }
 
   // Pump SDK messages onto the WebSocket as they arrive.

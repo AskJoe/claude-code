@@ -1383,6 +1383,10 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     auth: REQUIRE_AUTH ? "required" : "off",
     githubOauth: APP_CONFIGURED ? "configured" : "off",
     runtime: E2B_RUNTIME_ENABLED ? "e2b" : "local",
+    advisor: process.env.LAB_ADVISOR_ENABLED === "1" ||
+      process.env.LAB_ADVISOR_ENABLED === "true"
+      ? "enabled"
+      : "off",
     nodeEnv: process.env.NODE_ENV ?? "development",
   });
 });
