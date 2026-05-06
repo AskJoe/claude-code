@@ -1050,6 +1050,7 @@ app.get(
       for (const m of history) {
         try {
           const evt = JSON.parse(m.content_json) as ServerEvent;
+          if (isObsoleteAdvisorNotice(evt)) continue;
           emitRaw(evt);
         } catch {}
       }
@@ -1374,6 +1375,13 @@ function roleFromEvent(e: ServerEvent): string | null {
     default:
       return null;
   }
+}
+
+function isObsoleteAdvisorNotice(e: ServerEvent): boolean {
+  return (
+    e.type === "system:notice" &&
+    e.text.includes("Advisor preset is selected but disabled at the server level")
+  );
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────

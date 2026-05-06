@@ -81,6 +81,10 @@ class E2BRuntime implements E2BPreviewRuntime {
   async start(): Promise<void> {
     this.setState({ status: "building", lastError: null });
     this.pushLog("stdout", "Starting E2B sandbox for exact Astro preview...\n");
+    log.info("e2b preview runtime starting", {
+      projectId: this.input.projectId,
+      sdkSandboxCreate: typeof Sandbox.create,
+    });
 
     try {
       this.sandbox = await Sandbox.create({
@@ -94,8 +98,14 @@ class E2BRuntime implements E2BPreviewRuntime {
           allowPublicTraffic: false,
         },
       });
+      log.info("e2b sandbox created", {
+        projectId: this.input.projectId,
+        sandboxId: this.sandbox.sandboxId,
+      });
       await this.fullSync();
+      log.info("e2b project files synced", { projectId: this.input.projectId });
       await this.installDependencies();
+      log.info("e2b dependencies installed", { projectId: this.input.projectId });
       await this.startDevServer();
       this.setState({ status: "ok", lastBuildAt: Date.now(), lastError: null });
       log.info("e2b preview runtime ready", {
@@ -107,7 +117,9 @@ class E2BRuntime implements E2BPreviewRuntime {
       this.setState({ status: "error", lastError: msg });
       log.error("e2b preview runtime failed", {
         projectId: this.input.projectId,
+        name: err?.name,
         msg: msg.slice(0, 200),
+        stack: typeof err?.stack === "string" ? err.stack.slice(0, 800) : undefined,
       });
     }
   }
@@ -322,9 +334,12 @@ class E2BRuntime implements E2BPreviewRuntime {
 
   private async startDevServer() {
     if (!this.sandbox) throw new Error("E2B sandbox is not ready");
-    this.pushLog("stdout", "$ npm run dev -- --host 0.0.0.0 --port 4321 (E2B)\n");
+    this.pushLog(
+      "stdout",
+      "$ npm run dev -- --host 0.0.0.0 --port 4321 --allowed-hosts .e2b.app (E2B)\n"
+    );
     this.devServer = await this.sandbox.commands.run(
-      `npm run dev -- --host 0.0.0.0 --port ${ASTRO_PORT}`,
+      `npm run dev -- --host 0.0.0.0 --port ${ASTRO_PORT} --allowed-hosts .e2b.app`,
       {
         cwd: SANDBOX_PROJECT_DIR,
         background: true,

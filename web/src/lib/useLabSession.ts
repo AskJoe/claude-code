@@ -539,11 +539,10 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
     }
 
     case "agent:error": {
-      // The Claude Agent SDK's CLI binary throws this format when the
-      // model's last turn ended with stop_reason=tool_use but the binary
-      // couldn't fulfill the tool call (e.g. the advisor tool isn't yet
-      // wired into the SDK runtime). Surface a friendlier message instead
-      // of the raw diagnostic.
+      // The Claude Agent SDK's CLI binary throws this format when the model's
+      // last turn ended with stop_reason=tool_use but the binary could not
+      // fulfill the tool call. Show a concise runtime failure without blaming
+      // missing env when the server has already accepted the advisor preset.
       const isEdeToolUse =
         /\[ede_diagnostic\][^]*stop_reason=tool_use/.test(event.message);
       if (isEdeToolUse) {
@@ -553,9 +552,9 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
             kind: "system",
             id: newId(),
             text:
-              "The model wanted to call a tool the runtime can't handle yet — likely the advisor tool. " +
-              "Try clicking Reset and sending the prompt again. If you're on a +advisor preset, switch " +
-              "to Default or Frugal until advisor support lands in the SDK.",
+              "The agent runtime stopped on an unresolved tool call. The server has advisor mode enabled, " +
+              "so this is a runtime/SDK failure rather than a missing advisor environment variable. " +
+              "Click Reset and try again; if it repeats, use the Render log line from this turn to debug the runtime.",
           },
         ]);
       } else {
@@ -569,6 +568,9 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
     }
 
     case "system:notice":
+      if (event.text.includes("Advisor preset is selected but disabled at the server level")) {
+        return;
+      }
       s.setChat((c) => [
         ...c,
         { kind: "system", id: newId(), text: event.text },
