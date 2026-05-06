@@ -55,8 +55,15 @@ await assertNoText("server/agent.ts", [
   "npm run build",
   "npm run dev",
   "src/pages",
+  "settings: inlineSettings",
 ]);
 await assertNoText("render.yaml", ["LAB_RUNTIME", "E2B_API_KEY"]);
+
+const agentSource = await read("server/agent.ts");
+await assertOk(
+  agentSource.includes("advisorModel: advisorModelId"),
+  "server/agent.ts should pass advisorModel through SDK settings"
+);
 
 const pkg = JSON.parse(await read("package.json")) as {
   dependencies?: Record<string, string>;

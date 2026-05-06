@@ -24,14 +24,10 @@ import type {
 // Beta header centralized here; bump when the API moves out of beta.
 const ADVISOR_BETA_HEADER = "advisor-tool-2026-03-01";
 
-// The Claude Agent SDK 0.2.x's bundled CLI binary doesn't have first-class
-// advisor support — `--advisor-model` isn't an exposed flag and passing
-// {"advisorModel": ...} via --settings lets the model emit advisor
-// `server_tool_use` blocks the binary can't fulfill, causing exit errors of
-// the form "[ede_diagnostic] result_type=user last_content_type=n/a
-// stop_reason=tool_use". Until we verify the SDK ships with a working
-// runtime, the advisor wiring is gated behind LAB_ADVISOR_ENABLED. Set it
-// only after testing on a small project.
+// Advisor remains behind an explicit production opt-in because it depends on
+// Anthropic's server-side advisor tool. The SDK exposes advisorModel through
+// `settings`; the beta flag still travels through CLI passthrough because the
+// SDK's typed `betas` union does not include this advisor beta yet.
 const ADVISOR_RUNTIME_ENABLED =
   process.env.LAB_ADVISOR_ENABLED === "1" ||
   process.env.LAB_ADVISOR_ENABLED === "true";
@@ -305,19 +301,26 @@ export function startAgent(
     thinking: { type: "adaptive" },
   };
 
-  // When advisor is on, pass the beta header + advisorModel via the SDK's
-  // CLI passthrough (extraArgs). The agent SDK 0.2.126 doesn't expose these
-  // on Options directly, but the underlying CLI binary accepts:
-  //   --betas advisor-tool-2026-03-01
-  //   --settings <json with advisorModel>
-  // Once the SDK adds first-class support, swap to that.
+  // When advisor is on, pass advisorModel through the SDK's first-class
+  // settings channel. Passing settings through extraArgs was fragile: the
+  // current SDK already serializes `options.settings` into the CLI's
+  // --settings flag, and duplicate/manual settings are a plausible cause of
+  // unresolved server_tool_use advisor failures.
   if (advisorActive && advisorModelId) {
-    const inlineSettings = JSON.stringify({ advisorModel: advisorModelId });
+    options.settings = {
+      ...(typeof options.settings === "object" ? options.settings : {}),
+      advisorModel: advisorModelId,
+    };
     options.extraArgs = {
       ...(options.extraArgs ?? {}),
       betas: ADVISOR_BETA_HEADER,
-      settings: inlineSettings,
     };
+    console.info("[agent] advisor runtime configured", {
+      executorModelId,
+      advisorModelId,
+      advisorBeta: ADVISOR_BETA_HEADER,
+      settingsAdvisorModel: true,
+    });
   }
 
   const stream = query({ prompt: inbox.iterable, options });
