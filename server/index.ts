@@ -913,6 +913,7 @@ app.get(
       for (const m of history) {
         try {
           const evt = JSON.parse(m.content_json) as ServerEvent;
+          if (isTransientRuntimeReplay(evt)) continue;
           emitRaw(evt);
         } catch {}
       }
@@ -1137,6 +1138,15 @@ function roleFromEvent(e: ServerEvent): string | null {
     default:
       return null;
   }
+}
+
+function isTransientRuntimeReplay(e: ServerEvent): boolean {
+  if (e.type !== "agent:error") return false;
+  return (
+    e.message.includes("Agent runtime timed out after") ||
+    e.message.includes("Agent runtime closed before the current turn completed") ||
+    e.message.includes("agent runtime stopped on an unresolved tool call")
+  );
 }
 
 // ── Boot ─────────────────────────────────────────────────────────────────────
