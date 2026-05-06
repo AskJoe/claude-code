@@ -27,3 +27,5 @@ delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
 export const PORT = Number(process.env.PORT ?? 3101);
 export const MODEL = process.env.LAB_MODEL ?? "claude-sonnet-4-6";
 export const ISOLATED_CLAUDE_CONFIG = isolatedConfig;
+export const LAB_RUNTIME = process.env.LAB_RUNTIME === "e2b" ? "e2b" : "local";
+export const E2B_RUNTIME_ENABLED = LAB_RUNTIME === "e2b";

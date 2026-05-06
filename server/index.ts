@@ -31,7 +31,7 @@ import { startAgent } from "./agent.ts";
 import { getSettings } from "./settings.ts";
 import { registerAdminRoutes } from "./admin.ts";
 import { openSession, type Session } from "./sessions.ts";
-import { PORT } from "./env.ts";
+import { E2B_RUNTIME_ENABLED, PORT } from "./env.ts";
 import { createRateLimiter } from "./rate-limit.ts";
 import {
   authMiddleware,
@@ -73,6 +73,11 @@ import {
 } from "./db.ts";
 import { connectExistingRepoForProject, startAutoSync, type AutoSyncer } from "./github-sync.ts";
 import { startAutoBuilder, type AutoBuilder, type BuildState } from "./auto-builder.ts";
+import {
+  startE2BPreviewRuntime,
+  type E2BPreviewRuntime,
+  type E2BState,
+} from "./e2b-runtime.ts";
 import { PREVIEW_EDITOR_RUNTIME } from "./preview-editor-runtime.ts";
 import {
   buildDeployUrl,
@@ -504,6 +509,13 @@ app.post("/api/projects/:id/builder/restart", authMiddleware, async (c) => {
   if (!project) return c.json({ error: "not found" }, 404);
 
   const existing = liveBuilders.get(id);
+  const e2bRuntime = liveE2BRuntimes.get(id);
+  if (E2B_RUNTIME_ENABLED && e2bRuntime) {
+    await e2bRuntime.restart();
+    log.info("e2b preview runtime restarted", { projectId: id, userId: user.id });
+    return c.json({ ok: true });
+  }
+
   if (!existing) {
     return c.json({ ok: false, reason: "no live session" }, 200);
   }
@@ -623,6 +635,7 @@ app.post("/api/github/disconnect", authMiddleware, (c) => {
 
 const liveSessions = new Map<number, Session>();
 const liveBuilders = new Map<number, AutoBuilder>();
+const liveE2BRuntimes = new Map<number, E2BPreviewRuntime>();
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -650,6 +663,13 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
   if (!session) return c.text("project not open", 404);
 
   const wildcard = c.req.path.replace(`/preview/${projectId}/`, "") || "index.html";
+  const raw = c.req.query("raw") === "1";
+  if (E2B_RUNTIME_ENABLED && !raw) {
+    const runtime = liveE2BRuntimes.get(projectId);
+    if (runtime) {
+      return runtime.proxy(wildcard, new URL(c.req.url));
+    }
+  }
   const isHtmlRoot = wildcard === "index.html" || wildcard.endsWith("/index.html");
 
   // Stale-detect: if a build is in flight, or src/ has been modified after
@@ -718,7 +738,6 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
   const buf = await readFile(abs);
   // raw=1 forces text/plain so the Code view can fetch HTML/CSS/JS as source
   // rather than rendering it.
-  const raw = c.req.query("raw") === "1";
 
   // For HTML responses (the rendered preview), inject the click-to-edit
   // runtime right before </body>. We don't inject for raw views (Code tab)
@@ -839,6 +858,7 @@ app.get(
     let project: PublicProject | null = null;
     let autoSync: AutoSyncer | null = null;
     let autoBuilder: AutoBuilder | null = null;
+    let e2bRuntime: E2BPreviewRuntime | null = null;
     let emitRaw: (e: ServerEvent) => void = () => {};
     // Active chat session row for this WS — every persisted message gets
     // tagged with chat_session_id so the sessions sidebar can browse history.
@@ -926,37 +946,51 @@ app.get(
         projectDir: projectDir(project.id),
       });
 
-      // The auto-builder rebuilds dist/ from src/ on every change so the
-      // preview always reflects the latest source. Without this, dist/ goes
-      // stale and the preview lies about what the project actually contains.
-      autoBuilder = startAutoBuilder({
-        projectId: project.id,
-        projectDir: projectDir(project.id),
-        onStateChange: (s: BuildState) => {
-          emitRaw({
-            type: "build:state",
-            status: s.status,
-            lastBuildAt: s.lastBuildAt,
-            lastError: s.lastError,
-          });
-        },
-        onLog: (line) => {
-          emitRaw({
-            type: "build:log",
-            stream: line.stream,
-            chunk: line.chunk,
-            ts: line.ts,
-          });
-        },
-      });
-      liveBuilders.set(project.id, autoBuilder);
+      const emitBuildState = (s: BuildState | E2BState) => {
+        emitRaw({
+          type: "build:state",
+          status: s.status,
+          lastBuildAt: s.lastBuildAt,
+          lastError: s.lastError,
+        });
+      };
+      const emitBuildLog = (line: { stream: "stdout" | "stderr"; chunk: string; ts: number }) => {
+        emitRaw({
+          type: "build:log",
+          stream: line.stream,
+          chunk: line.chunk,
+          ts: line.ts,
+        });
+      };
+
+      if (E2B_RUNTIME_ENABLED) {
+        e2bRuntime = await startE2BPreviewRuntime({
+          projectId: project.id,
+          projectDir: projectDir(project.id),
+          userId: user.id,
+          onStateChange: emitBuildState,
+          onLog: emitBuildLog,
+        });
+        liveE2BRuntimes.set(project.id, e2bRuntime);
+      } else {
+        // The local auto-builder rebuilds dist/ from src/ on every change so
+        // the preview always reflects the latest source.
+        autoBuilder = startAutoBuilder({
+          projectId: project.id,
+          projectDir: projectDir(project.id),
+          onStateChange: emitBuildState,
+          onLog: emitBuildLog,
+        });
+        liveBuilders.set(project.id, autoBuilder);
+      }
 
       session = await openSession({
         projectId: project.id,
         rootDir: projectDir(project.id),
         onChange: (files) => emitRaw({ type: "files:changed", files }),
-        onFsEvent: () => {
+        onFsEvent: (kind, path) => {
           autoSync?.notifyChange();
+          e2bRuntime?.notifyFsEvent(kind, path);
           autoBuilder?.notifyChange();
         },
       });
@@ -976,7 +1010,7 @@ app.get(
       // Optional chaining guard mirrors the onFsEvent callback above —
       // autoBuilder can be unset if the WS races with teardown during the
       // `await openSession(...)` window.
-      if (await isSrcNewerThanDist(projectDir(project.id))) {
+      if (!E2B_RUNTIME_ENABLED && (await isSrcNewerThanDist(projectDir(project.id)))) {
         autoBuilder?.triggerNow();
       }
 
@@ -1041,6 +1075,11 @@ app.get(
         if (project) liveBuilders.delete(project.id);
         autoBuilder.dispose();
         autoBuilder = null;
+      }
+      if (e2bRuntime) {
+        if (project) liveE2BRuntimes.delete(project.id);
+        await e2bRuntime.dispose();
+        e2bRuntime = null;
       }
     };
 

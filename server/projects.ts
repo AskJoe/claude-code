@@ -86,6 +86,12 @@ export async function ensureProjectStarter(projectId: number): Promise<void> {
         recursive: true,
         force: false,
         errorOnExist: false,
+        filter: (source) => {
+          const parts = source.split(/[\\/]/g);
+          return !parts.some((part) =>
+            ["node_modules", "dist", ".astro", ".git"].includes(part)
+          );
+        },
       });
     } else {
       throw new Error(`template path is not a directory: ${TEMPLATE_DIR}`);
