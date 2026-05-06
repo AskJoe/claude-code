@@ -606,7 +606,7 @@ export function ChatPanel({
               return (
                 <div
                   key={item.id}
-                  data-vindex={vi.index}
+                  data-index={vi.index}
                   ref={virtualizer.measureElement}
                   style={{
                     position: "absolute",

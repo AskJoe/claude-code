@@ -92,6 +92,26 @@ await assertOk(
   "server/agent.ts should disable extended thinking for interactive latency"
 );
 
+const serverSource = await read("server/index.ts");
+await assertOk(
+  serverSource.includes('"Access-Control-Allow-Origin": "*"'),
+  "server/index.ts should let sandboxed preview pages load preview assets"
+);
+await assertOk(
+  serverSource.includes("PREVIEW_SHARED_HEADERS"),
+  "server/index.ts should share preview security/CORS headers across HTML and assets"
+);
+
+const chatPanelSource = await read("web/src/components/ChatPanel.tsx");
+await assertOk(
+  chatPanelSource.includes("data-index={vi.index}"),
+  "ChatPanel virtualized rows should expose data-index for measurement"
+);
+await assertOk(
+  !chatPanelSource.includes("data-vindex"),
+  "ChatPanel should not use the invalid data-vindex attribute"
+);
+
 const pkg = JSON.parse(await read("package.json")) as {
   dependencies?: Record<string, string>;
 };

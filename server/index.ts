@@ -614,6 +614,12 @@ const MIME: Record<string, string> = {
   ".md": "text/plain; charset=utf-8",
 };
 
+const PREVIEW_SHARED_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Cross-Origin-Resource-Policy": "cross-origin",
+  "X-Frame-Options": "SAMEORIGIN",
+};
+
 app.get("/preview/:projectId/*", authMiddleware, async (c) => {
   const user = c.get("user");
   const projectId = Number(c.req.param("projectId"));
@@ -684,9 +690,9 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
     const injected = injectEditorRuntime(rewritten);
     return new Response(injected, {
       headers: {
+        ...PREVIEW_SHARED_HEADERS,
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store",
-        "X-Frame-Options": "SAMEORIGIN",
       },
     });
   }
@@ -701,13 +707,13 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
 
   return new Response(buf, {
     headers: {
+      ...PREVIEW_SHARED_HEADERS,
       "Content-Type": raw
         ? "text/plain; charset=utf-8"
         : (MIME[ext] ?? "text/plain; charset=utf-8"),
       "Cache-Control": longCache
         ? "public, max-age=31536000, immutable"
         : "no-store",
-      "X-Frame-Options": "SAMEORIGIN",
     },
   });
 });
