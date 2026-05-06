@@ -27,6 +27,12 @@ db.pragma("foreign_keys = ON");
 // All schema lives in server/migrations.ts and runs forward-only — no drops
 // here. Rerunnable by design.
 runMigrations(db);
+db.prepare(`
+  UPDATE users
+  SET is_admin = 1
+  WHERE id = (SELECT id FROM users ORDER BY id ASC LIMIT 1)
+    AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = 1)
+`).run();
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -110,6 +116,9 @@ const sCreateUser = db.prepare<
 const sUpdateLastLogin = db.prepare<[number], void>(
   "UPDATE users SET last_login_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"
 );
+const sSetUserAdmin = db.prepare<[number, number], void>(
+  "UPDATE users SET is_admin = ? WHERE id = ?"
+);
 
 export function getUserByEmail(email: string): UserRow | null {
   return sUserByEmail.get(email.toLowerCase().trim()) ?? null;
@@ -130,11 +139,19 @@ export function createUser(input: {
     input.displayName
   );
   if (!row) throw new Error("createUser returned no row");
+  if (row.is_admin !== 1 && countAdmins() === 0) {
+    setUserAdmin(row.id, true);
+    return getUserById(row.id) ?? { ...row, is_admin: 1 };
+  }
   return row;
 }
 
 export function touchUserLogin(id: number): void {
   sUpdateLastLogin.run(id);
+}
+
+export function setUserAdmin(id: number, isAdmin: boolean): void {
+  sSetUserAdmin.run(isAdmin ? 1 : 0, id);
 }
 
 // ── GitHub connection statements ─────────────────────────────────────────────

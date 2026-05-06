@@ -73,6 +73,7 @@ LAB_SESSION_SECRET=test-secret-do-not-use-in-prod npm run auth-smoke
 A `render.yaml` blueprint is included. Push to GitHub, hit "New → Blueprint" in Render, then in the dashboard set:
 
 - `ANTHROPIC_API_KEY` — your real Anthropic key
+- `LAB_ADMIN_EMAILS` — comma-separated login emails that should see the admin area
 
 The blueprint generates `LAB_SESSION_SECRET` automatically if the Render service
 doesn't already have one. If you manage the service manually instead of through

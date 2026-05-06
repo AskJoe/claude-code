@@ -91,6 +91,9 @@ async function main() {
   if (signup.status !== 200) fail(`signup failed: ${signup.status} ${JSON.stringify(signup.body)}`);
   const cookie = extractSessionCookie(signup.setCookie);
   if (!signup.body?.user?.id) fail(`signup returned no user id: ${JSON.stringify(signup.body)}`);
+  if (signup.body.user.id === 1 && signup.body.user.isAdmin !== true) {
+    fail(`first signed-up user was not bootstrapped as admin: ${JSON.stringify(signup.body)}`);
+  }
   console.log(`  ✓ signed up user id=${signup.body.user.id}`);
 
   console.log("▶ step 4: authenticated project creation works");

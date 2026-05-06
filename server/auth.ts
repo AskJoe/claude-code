@@ -26,6 +26,7 @@ import {
   invalidateUserTokens,
   markAuthTokenUsed,
   markUserEmailVerified,
+  setUserAdmin,
   setUserDisplayName,
   setUserPasswordHash,
   setUserSystemPrompt,
@@ -46,6 +47,12 @@ const COOKIE = "lab_session";
 const COOKIE_MAX_AGE_SEC = 30 * 24 * 60 * 60; // 30 days
 const SESSION_SECRET = process.env.LAB_SESSION_SECRET ?? "";
 const IS_PROD = process.env.NODE_ENV === "production";
+const ADMIN_EMAILS = new Set(
+  `${process.env.LAB_ADMIN_EMAILS ?? ""},${process.env.LAB_ADMIN_EMAIL ?? ""}`
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 export const REQUIRE_AUTH = !!SESSION_SECRET;
 
@@ -88,12 +95,22 @@ function isVerifyRequired(): boolean {
   return isSmtpConfigured();
 }
 
+function shouldPromoteAdmin(row: UserRow): boolean {
+  return ADMIN_EMAILS.has(row.email.toLowerCase());
+}
+
 function userFromRow(row: UserRow): AuthUser {
+  const envAdmin = shouldPromoteAdmin(row);
+  if (envAdmin && row.is_admin !== 1) {
+    setUserAdmin(row.id, true);
+    row = { ...row, is_admin: 1 };
+    log.info("user promoted to admin from LAB_ADMIN_EMAILS", { userId: row.id });
+  }
   return {
     id: row.id,
     email: row.email,
     displayName: row.display_name,
-    isAdmin: row.is_admin === 1,
+    isAdmin: row.is_admin === 1 || envAdmin,
     // Pretend verified when verification isn't required — keeps the
     // bottom-right banner from nagging users in dev / no-SMTP setups.
     emailVerified: row.email_verified === 1 || !isVerifyRequired(),
