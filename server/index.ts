@@ -782,9 +782,8 @@ app.get(
     const projectId = Number(c.req.query("projectId"));
     const wsMode: "code" | "plan" =
       c.req.query("mode") === "plan" ? "plan" : "code";
-    // Per-session executor + advisor preset, picked client-side from
-    // localStorage (`lab.modelPreset`) and forwarded on WS open. Defaults
-    // mirror the lab-wide setting when absent or invalid.
+    // Per-session executor preset, picked client-side from localStorage
+    // (`lab.modelPreset`) and forwarded on WS open.
     const validExecutors = new Set([
       "haiku-4.5",
       "sonnet-4.6",
@@ -795,8 +794,6 @@ app.get(
     const wsExecutor = validExecutors.has(executorRaw)
       ? (executorRaw as "haiku-4.5" | "sonnet-4.6" | "opus-4.6" | "opus-4.7")
       : undefined;
-    const wsAdvisor =
-      c.req.query("advisor") === "opus-4.7" ? "opus-4.7" : null;
     let session: Session | null = null;
     let agent: ReturnType<typeof startAgent> | null = null;
     let project: PublicProject | null = null;
@@ -902,7 +899,6 @@ app.get(
         userId: user.id,
         mode: wsMode,
         executor: wsExecutor,
-        advisor: wsAdvisor,
       });
 
       emitRaw({
@@ -917,7 +913,6 @@ app.get(
       for (const m of history) {
         try {
           const evt = JSON.parse(m.content_json) as ServerEvent;
-          if (isObsoleteAdvisorNotice(evt)) continue;
           emitRaw(evt);
         } catch {}
       }
@@ -1051,13 +1046,12 @@ app.get(
           }
           case "session:set_preset": {
             // Same forward-compat pattern as set_model: the SDK can't swap
-            // executor or toggle the advisor tool mid-query(). The client
-            // already persisted to localStorage and surfaced the system
-            // message; this server-side ack is for logs/observability.
+            // executor mid-query(). The client already persisted to
+            // localStorage and surfaced the system message; this server-side
+            // ack is for logs/observability.
             log.info("preset preference received", {
               projectId: project?.id,
               executor: cmd.executor,
-              advisor: cmd.advisor,
             });
             return;
           }
@@ -1145,13 +1139,6 @@ function roleFromEvent(e: ServerEvent): string | null {
   }
 }
 
-function isObsoleteAdvisorNotice(e: ServerEvent): boolean {
-  return (
-    e.type === "system:notice" &&
-    e.text.includes("Advisor preset is selected but disabled at the server level")
-  );
-}
-
 // ── Boot ─────────────────────────────────────────────────────────────────────
 
 if (await distExists()) {
@@ -1170,10 +1157,6 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     auth: REQUIRE_AUTH ? "required" : "off",
     githubOauth: APP_CONFIGURED ? "configured" : "off",
     preview: "static",
-    advisor: process.env.LAB_ADVISOR_ENABLED === "1" ||
-      process.env.LAB_ADVISOR_ENABLED === "true"
-      ? "enabled"
-      : "off",
     nodeEnv: process.env.NODE_ENV ?? "development",
   });
 });

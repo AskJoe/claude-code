@@ -13,10 +13,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { renderMarkdown } from "../lib/markdown.tsx";
 import { exportSessionUrl } from "../lib/api.ts";
 import type { ChatItem, LabState } from "../lib/useLabSession.ts";
-import type {
-  AdvisorModel,
-  ExecutorModel,
-} from "../../../shared/events.ts";
+import type { ExecutorModel } from "../../../shared/events.ts";
 import {
   PRESETS,
   loadPresetId,
@@ -49,13 +46,6 @@ type Props = {
   status: LabState["status"];
   chat: ChatItem[];
   cumulativeCostUsd: number;
-  /** Cost split when an Opus advisor was active. Both default to the total
-   *  when omitted (advisor never invoked). */
-  cumulativeExecutorCostUsd?: number;
-  cumulativeAdvisorCostUsd?: number;
-  /** Total advisor sub-inferences fired this session — drives the
-   *  per-conversation cap surface. */
-  advisorCallsThisSession?: number;
   budgetUsd: number;
   projectId: number;
   sessionId: string | null;
@@ -65,10 +55,10 @@ type Props = {
   onSend: (text: string) => void;
   onAbort: () => void;
   onReset: () => void;
-  /** Pushes the user's chosen executor+advisor pair to the server (no-op
-   *  for the running agent; applies on next session). When omitted the
-   *  preset pill is hidden. */
-  onSetPreset?: (executor: ExecutorModel, advisor: AdvisorModel) => void;
+  /** Pushes the user's chosen executor preset to the server (no-op for the
+   *  running agent; applies on next session). When omitted the preset pill is
+   *  hidden. */
+  onSetPreset?: (executor: ExecutorModel) => void;
   /** Optional handlers wired by App.tsx for the command palette. */
   onSetRightView?: (v: "preview" | "code") => void;
   onSetTheme?: (t: "light" | "dark" | "system") => void;
@@ -99,9 +89,6 @@ export function ChatPanel({
   status,
   chat,
   cumulativeCostUsd,
-  cumulativeExecutorCostUsd,
-  cumulativeAdvisorCostUsd,
-  advisorCallsThisSession,
   budgetUsd,
   projectId,
   sessionId,
@@ -523,10 +510,7 @@ export function ChatPanel({
           )}
           <CostMeter
             spent={cumulativeCostUsd}
-            executor={cumulativeExecutorCostUsd}
-            advisor={cumulativeAdvisorCostUsd}
             budget={budgetUsd}
-            advisorActive={getPreset(presetId).advisor !== null}
             onClick={onShowCost}
           />
           {onSetPreset && (
@@ -538,7 +522,7 @@ export function ChatPanel({
               onPick={(p) => {
                 setPresetId(p.id);
                 savePresetId(p.id);
-                onSetPreset(p.executor, p.advisor);
+                onSetPreset(p.executor);
                 setPresetPopoverOpen(false);
                 if (onSystemMessage) {
                   onSystemMessage(
@@ -579,8 +563,7 @@ export function ChatPanel({
           </span>
           <span className="budget-banner-text">
             You've used {Math.round(budgetPct * 100)}% of today's budget.
-            Consider switching to a Frugal preset, disabling the advisor, or
-            pausing.
+            Consider switching to a Frugal preset or pausing.
           </span>
           <button
             type="button"
@@ -860,31 +843,18 @@ function ChatRow({ item }: { item: ChatItem }) {
 
 function CostMeter({
   spent,
-  executor,
-  advisor,
   budget,
-  advisorActive,
   onClick,
 }: {
   spent: number;
-  executor?: number;
-  advisor?: number;
   budget: number;
-  advisorActive: boolean;
   onClick?: () => void;
 }) {
   const pct = Math.min(100, Math.round((spent / Math.max(budget, 0.01)) * 100));
   const tone = pct >= 90 ? "danger" : pct >= 60 ? "warn" : "ok";
-  const exec = typeof executor === "number" ? executor : spent;
-  const adv = typeof advisor === "number" ? advisor : 0;
   const tooltipParts = [
     `Session cost: $${spent.toFixed(4)} of $${budget.toFixed(2)} budget.`,
   ];
-  if (advisorActive || adv > 0) {
-    tooltipParts.push(
-      `Executor: $${exec.toFixed(4)}  ·  Advisor (Opus 4.7): $${adv.toFixed(4)}`
-    );
-  }
   if (onClick) tooltipParts.push("Click for the cost dashboard.");
   const Tag = onClick ? "button" : "div";
   return (
@@ -903,17 +873,6 @@ function CostMeter({
           style={{ width: `${pct}%` }}
         />
       </div>
-      {(advisorActive || adv > 0) && spent > 0 && (
-        <div className="cost-split" aria-hidden>
-          <span className="cost-split-exec">
-            ex ${exec.toFixed(2)}
-          </span>
-          <span className="cost-split-sep">·</span>
-          <span className="cost-split-adv">
-            adv ${adv.toFixed(2)}
-          </span>
-        </div>
-      )}
     </Tag>
   );
 }
@@ -932,14 +891,13 @@ const PresetPill = forwardRef<
     <div className="model-pill-wrap" ref={ref}>
       <button
         type="button"
-        className={`model-pill${current.advisor ? " model-pill-advised" : ""}`}
+        className="model-pill"
         onClick={onToggle}
         aria-haspopup="listbox"
         aria-expanded={open}
-        title="Change executor + advisor preset (applies on next session)"
+        title="Change model preset (applies on next session)"
       >
         <span>{current.label}</span>
-        {current.advisor && <span className="advisor-tag" aria-hidden>+adv</span>}
         <span className="caret" aria-hidden>
           ▾
         </span>

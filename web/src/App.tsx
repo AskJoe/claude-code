@@ -629,9 +629,6 @@ function Lab({
             status={lab.status}
             chat={lab.chat}
             cumulativeCostUsd={lab.cumulativeCostUsd}
-            cumulativeExecutorCostUsd={lab.cumulativeExecutorCostUsd}
-            cumulativeAdvisorCostUsd={lab.cumulativeAdvisorCostUsd}
-            advisorCallsThisSession={lab.advisorCallsThisSession}
             budgetUsd={lab.budgetUsd}
             projectId={projectId}
             sessionId={lab.sessionId}

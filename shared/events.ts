@@ -37,30 +37,14 @@ export type ServerEvent =
       outputTokens: number;
       subtype: string;
       cumulativeCostUsd: number;
-      /** Per-turn cost split when an Opus advisor was active.
-       * Null on turns where no advisor sub-inference fired. */
-      executorCostUsd?: number;
-      advisorCostUsd?: number;
-      /** Cumulative-to-this-turn split, surfaced for the cost meter tooltip. */
-      cumulativeExecutorCostUsd?: number;
-      cumulativeAdvisorCostUsd?: number;
     }
   | { type: "agent:error"; message: string }
   | {
       // Server-emitted neutral notice that should land in chat as a system
-      // line (not an error bubble). Used for things like "advisor preset is
-      // selected but the runtime flag is off" or recoverable agent
-      // diagnostics that we don't want to mask but also don't want to scream.
+      // line (not an error bubble). Used for recoverable agent diagnostics
+      // that we don't want to mask but also don't want to scream.
       type: "system:notice";
       text: string;
-    }
-  | {
-      // Emitted whenever the executor consults the advisor in this turn.
-      // Drives the per-conversation cap and the chat hint surface.
-      type: "agent:advisor_used";
-      advisorTokens: number;
-      advisorCostUsd: number;
-      callCountThisSession: number;
     }
   | { type: "files:changed"; files: FileNode[] }
   | { type: "warn:rate_limited"; retryAfterMs: number }
@@ -88,28 +72,21 @@ export type ServerEvent =
 
 /** Client → server */
 // Legacy ModelKey kept for backwards-compat with older client builds. New code
-// should use ExecutorModel + AdvisorModel below.
+// should use ExecutorModel below.
 export type ModelKey = "sonnet-4.6" | "opus-4.7" | "haiku";
 
-/** Executor models accepted by Anthropic's advisor tool today. */
+/** Executor models accepted by the lab runtime today. */
 export type ExecutorModel =
   | "haiku-4.5"
   | "sonnet-4.6"
   | "opus-4.6"
   | "opus-4.7";
 
-/** Advisor models. Today only Opus 4.7; null means advisor disabled. */
-export type AdvisorModel = "opus-4.7" | null;
-
 export type ClientCommand =
   | { type: "user:message"; text: string }
   | { type: "agent:abort" }
   | { type: "session:reset" }
   | { type: "session:set_model"; model: ModelKey }
-  | {
-      type: "session:set_preset";
-      executor: ExecutorModel;
-      advisor: AdvisorModel;
-    };
+  | { type: "session:set_preset"; executor: ExecutorModel };
 
 export const WS_PATH = "/ws";

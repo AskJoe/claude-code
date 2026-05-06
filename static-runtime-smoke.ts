@@ -56,20 +56,29 @@ await assertNoText("server/agent.ts", [
   "npm run dev",
   "src/pages",
   "settings: inlineSettings",
-  "ADVISOR_BETA_HEADER",
-  "advisor-tool-2026-03-01",
+  "advisor",
+  "Advisor",
+  "ADVISOR",
+  "cloudwise_advisor",
+  "mcp__cloudwise_advisor",
+  "createSdkMcpServer",
 ]);
-await assertNoText("render.yaml", ["LAB_RUNTIME", "E2B_API_KEY"]);
+await assertNoText("shared/events.ts", ["advisor", "Advisor", "ADVISOR"]);
+await assertNoText("web/src/lib/models.ts", ["advisor", "Advisor", "ADVISOR"]);
+await assertNoText("web/src/lib/useLabSession.ts", ["advisor", "Advisor", "ADVISOR"]);
+await assertNoText("web/src/components/ChatPanel.tsx", ["advisor", "Advisor", "ADVISOR"]);
+await assertNoText("web/src/components/SettingsPanel.tsx", ["advisor", "Advisor", "ADVISOR"]);
+await assertNoText("render.yaml", [
+  "LAB_RUNTIME",
+  "E2B_API_KEY",
+  "LAB_ADVISOR",
+  "advisor",
+  "Advisor",
+  "ADVISOR",
+]);
+await assertNoText("README.md", ["advisor", "Advisor", "ADVISOR"]);
 
 const agentSource = await read("server/agent.ts");
-await assertOk(
-  agentSource.includes("createSdkMcpServer"),
-  "server/agent.ts should expose advisor as an in-process SDK MCP tool"
-);
-await assertOk(
-  agentSource.includes("cloudwise_advisor: createAdvisorServer(advisorModelId)"),
-  "server/agent.ts should register the local advisor MCP server when advisor is active"
-);
 await assertOk(
   agentSource.includes("const visibleActivity = routeSdkMessage(msg, emit);"),
   "server/agent.ts should base the stall watchdog on visible SDK activity"
@@ -83,5 +92,9 @@ const pkg = JSON.parse(await read("package.json")) as {
   dependencies?: Record<string, string>;
 };
 await assertOk(!pkg.dependencies?.e2b, "package.json should not depend on e2b");
+await assertOk(
+  !pkg.dependencies?.["@anthropic-ai/sdk"],
+  "package.json should not directly depend on @anthropic-ai/sdk"
+);
 
 console.log("Static preview runtime smoke passed.");

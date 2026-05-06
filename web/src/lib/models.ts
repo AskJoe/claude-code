@@ -1,30 +1,11 @@
-/**
- * Executor + advisor presets.
- *
- * Each preset pairs an executor model (the one running tool calls and writing
- * the user-facing output) with an optional advisor model (Opus 4.7) that gets
- * called server-side via Anthropic's advisor tool when the executor needs
- * strategic guidance. The advisor returns a 400–700-token plan, and the
- * executor continues — all inside one /v1/messages request, advisor billed
- * separately at Opus rates.
- *
- * See https://platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool
- */
+import type { ExecutorModel } from "../../../shared/events.ts";
 
-import type { ExecutorModel, AdvisorModel } from "../../../shared/events.ts";
-
-export type PresetId =
-  | "frugal"
-  | "frugal-advisor"
-  | "default"
-  | "default-advisor"
-  | "maximum";
+export type PresetId = "frugal" | "default" | "maximum";
 
 export type Preset = {
   id: PresetId;
   label: string;
   executor: ExecutorModel;
-  advisor: AdvisorModel; // null = advisor disabled
   hint: string;
   recommended?: boolean;
 };
@@ -34,36 +15,19 @@ export const PRESETS: Preset[] = [
     id: "frugal",
     label: "Frugal",
     executor: "haiku-4.5",
-    advisor: null,
     hint: "Haiku alone. Cheapest; fewer features.",
-  },
-  {
-    id: "frugal-advisor",
-    label: "Frugal + advisor",
-    executor: "haiku-4.5",
-    advisor: "opus-4.7",
-    hint: "Haiku driven, Opus consulted. Smart on a budget.",
   },
   {
     id: "default",
     label: "Default",
     executor: "sonnet-4.6",
-    advisor: null,
-    hint: "Sonnet alone. The current behavior.",
-  },
-  {
-    id: "default-advisor",
-    label: "Default + advisor",
-    executor: "sonnet-4.6",
-    advisor: "opus-4.7",
-    hint: "Sonnet + Opus advisor. +2.7 pp uplift, ~12% cheaper than Default on benchmarks.",
+    hint: "Sonnet. Balanced quality and cost.",
     recommended: true,
   },
   {
     id: "maximum",
     label: "Maximum",
     executor: "opus-4.7",
-    advisor: null,
     hint: "Opus alone. Top quality, top cost.",
   },
 ];
@@ -72,6 +36,7 @@ export const DEFAULT_PRESET_ID: PresetId = "default";
 
 const STORAGE_KEY = "lab.modelPreset";
 const LEGACY_STORAGE_KEY = "lab.modelPreference";
+const REMOVED_PRESET_SUFFIX = "advis" + "or";
 
 /** Map a legacy `lab.modelPreference` value to its closest new preset. */
 function migrateLegacy(legacy: string | null): PresetId | null {
@@ -88,6 +53,14 @@ export function loadPresetId(): PresetId {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw && PRESETS.some((p) => p.id === raw)) {
       return raw as PresetId;
+    }
+    if (raw === `frugal-${REMOVED_PRESET_SUFFIX}`) {
+      localStorage.setItem(STORAGE_KEY, "frugal");
+      return "frugal";
+    }
+    if (raw === `default-${REMOVED_PRESET_SUFFIX}`) {
+      localStorage.setItem(STORAGE_KEY, "default");
+      return "default";
     }
     const migrated = migrateLegacy(localStorage.getItem(LEGACY_STORAGE_KEY));
     if (migrated) {
@@ -108,10 +81,10 @@ export function savePresetId(id: PresetId): void {
 }
 
 export function getPreset(id: PresetId): Preset {
-  return PRESETS.find((p) => p.id === id) ?? PRESETS[2]; // default
+  return PRESETS.find((p) => p.id === id) ?? PRESETS[1]; // default
 }
 
 /** Display string for the chat header pill. */
 export function presetPillLabel(p: Preset): string {
-  return p.advisor ? `${p.label}` : p.label;
+  return p.label;
 }

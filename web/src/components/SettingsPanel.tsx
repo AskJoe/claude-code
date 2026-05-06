@@ -246,15 +246,6 @@ function useLocalBool(key: string, def: boolean): [boolean, (v: boolean) => void
 
 function AgentTab() {
   const [presetId, setPresetIdState] = useState<PresetId>(() => loadPresetId());
-  const [advisorCap, setAdvisorCap] = useState<number>(() => {
-    try {
-      const raw = localStorage.getItem("lab.advisorCap");
-      const n = raw ? Number(raw) : 30;
-      return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
-    } catch {
-      return 30;
-    }
-  });
   const [showReasoning, setShowReasoning] = useLocalBool(
     "lab.showReasoning",
     false
@@ -265,13 +256,6 @@ function AgentTab() {
   const [permissionMode, setPermissionMode] = useLocalRadio<
     "auto" | "bash-only" | "all"
   >("lab.permissionMode", "auto");
-
-  const updateAdvisorCap = (n: number) => {
-    setAdvisorCap(n);
-    try {
-      localStorage.setItem("lab.advisorCap", String(n));
-    } catch {}
-  };
 
   return (
     <>
@@ -301,9 +285,6 @@ function AgentTab() {
                     {p.recommended && (
                       <span className="recommended-badge">Recommended</span>
                     )}
-                    {p.advisor && (
-                      <span className="advisor-tag">+adv</span>
-                    )}
                   </div>
                   <div className="settings-preset-hint">{p.hint}</div>
                 </div>
@@ -312,38 +293,7 @@ function AgentTab() {
           </div>
           <div className="settings-help">
             Click Reset on the chat header after changing the preset to apply
-            it. The advisor strategy pairs a cheap executor with Opus 4.7 for
-            mid-task strategic guidance — see{" "}
-            <a
-              href="https://claude.com/blog/the-advisor-strategy"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Anthropic's writeup
-            </a>
-            .
-          </div>
-        </div>
-      </div>
-
-      <div className="settings-row">
-        <label>Advisor cap</label>
-        <div>
-          <input
-            type="number"
-            min={1}
-            max={500}
-            value={advisorCap}
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (Number.isFinite(n) && n > 0) updateAdvisorCap(Math.floor(n));
-            }}
-            style={{ maxWidth: 120 }}
-          />
-          <div className="settings-help">
-            Stop calling the advisor after this many calls per session. The
-            chat shows a warning when reached. Default 30. Has no effect on
-            non-advisor presets.
+            it.
           </div>
         </div>
       </div>

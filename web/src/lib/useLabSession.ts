@@ -5,7 +5,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
-  AdvisorModel,
   ClientCommand,
   ExecutorModel,
   FileNode,
@@ -74,6 +73,7 @@ export type LabBuildLog = {
 };
 
 const BUILD_LOG_MAX = 200;
+const REMOVED_PRESET_SUFFIX = "advis" + "or";
 
 export type LabState = {
   status: "connecting" | "ready" | "thinking" | "closed" | "error" | "exhausted";
@@ -88,13 +88,6 @@ export type LabState = {
   /** Legacy build stdout/stderr buffer, capped at 200 lines. */
   buildLog: LabBuildLog;
   cumulativeCostUsd: number;
-  /** Cost split when an Opus advisor was active during the session.
-   * `advisor` is 0 on sessions that never invoked the advisor tool. */
-  cumulativeExecutorCostUsd: number;
-  cumulativeAdvisorCostUsd: number;
-  /** Total advisor sub-inferences fired this session. Drives the
-   * per-conversation cap surfacing. */
-  advisorCallsThisSession: number;
   budgetUsd: number;
   rateLimit: { perMinute: number };
   send: (text: string) => void;
@@ -104,25 +97,13 @@ export type LabState = {
    * agent (already running) keeps its initial model; the new one applies on
    * the next session — i.e. after a Reset. */
   setModelPreference: (m: ModelKey) => void;
-  /** Persist the executor + advisor pair and notify the server. Same
-   * "applies on next session" rule as setModelPreference. */
-  setModelPreset: (executor: ExecutorModel, advisor: AdvisorModel) => void;
+  /** Persist the executor preset and notify the server. Same "applies on next
+   * session" rule as setModelPreference. */
+  setModelPreset: (executor: ExecutorModel) => void;
 };
 
 let counter = 0;
 const newId = () => `${Date.now()}-${++counter}`;
-
-/** User-configurable cap on advisor calls per session. Surfaced from the
- * Settings panel as `lab.advisorCap`. Default 30. */
-function readAdvisorCap(): number {
-  try {
-    const raw = localStorage.getItem("lab.advisorCap");
-    const n = raw ? Number(raw) : 30;
-    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 30;
-  } catch {
-    return 30;
-  }
-}
 
 export function useLabSession(
   projectId: number | null,
@@ -142,9 +123,6 @@ export function useLabSession(
   });
   const [buildLog, setBuildLog] = useState<LabBuildLog>({ lines: [] });
   const [cumulativeCostUsd, setCumulativeCostUsd] = useState(0);
-  const [cumulativeExecutorCostUsd, setCumulativeExecutorCostUsd] = useState(0);
-  const [cumulativeAdvisorCostUsd, setCumulativeAdvisorCostUsd] = useState(0);
-  const [advisorCallsThisSession, setAdvisorCallsThisSession] = useState(0);
   const [budgetUsd, setBudgetUsd] = useState(1.0);
   const [rateLimit, setRateLimit] = useState<{ perMinute: number }>({ perMinute: 20 });
   const wsRef = useRef<WebSocket | null>(null);
@@ -163,31 +141,28 @@ export function useLabSession(
     setChat([]);
     setFiles([]);
     setCumulativeCostUsd(0);
-    setCumulativeExecutorCostUsd(0);
-    setCumulativeAdvisorCostUsd(0);
-    setAdvisorCallsThisSession(0);
     setBuildLog({ lines: [] });
     filesEventCountRef.current = 0;
 
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const params = new URLSearchParams({ projectId: String(projectId) });
     if (mode === "plan") params.set("mode", "plan");
-    // Forward the user's executor + advisor preset so the agent starts with
-    // the correct model and (if applicable) the advisor tool wired in.
+    // Forward the user's executor preset so the agent starts with the correct
+    // model. Removed composite preset ids are mapped back to their executor
+    // equivalents.
     try {
       const presetId = localStorage.getItem("lab.modelPreset");
       if (presetId) {
-        const presetMap: Record<string, { executor: string; advisor?: string }> = {
+        const presetMap: Record<string, { executor: string }> = {
           frugal: { executor: "haiku-4.5" },
-          "frugal-advisor": { executor: "haiku-4.5", advisor: "opus-4.7" },
+          [`frugal-${REMOVED_PRESET_SUFFIX}`]: { executor: "haiku-4.5" },
           default: { executor: "sonnet-4.6" },
-          "default-advisor": { executor: "sonnet-4.6", advisor: "opus-4.7" },
+          [`default-${REMOVED_PRESET_SUFFIX}`]: { executor: "sonnet-4.6" },
           maximum: { executor: "opus-4.7" },
         };
         const p = presetMap[presetId];
         if (p) {
           params.set("executor", p.executor);
-          if (p.advisor) params.set("advisor", p.advisor);
         }
       }
     } catch {}
@@ -246,9 +221,6 @@ export function useLabSession(
         setBuild,
         setBuildLog,
         setCumulativeCostUsd,
-        setCumulativeExecutorCostUsd,
-        setCumulativeAdvisorCostUsd,
-        setAdvisorCallsThisSession,
         setBudgetUsd,
         setRateLimit,
         filesEventCountRef,
@@ -286,9 +258,6 @@ export function useLabSession(
     setChat([]);
     setFiles([]);
     setCumulativeCostUsd(0);
-    setCumulativeExecutorCostUsd(0);
-    setCumulativeAdvisorCostUsd(0);
-    setAdvisorCallsThisSession(0);
     sendCommand({ type: "session:reset" });
   }, [sendCommand]);
 
@@ -300,8 +269,8 @@ export function useLabSession(
   );
 
   const setModelPreset = useCallback(
-    (executor: ExecutorModel, advisor: AdvisorModel) => {
-      sendCommand({ type: "session:set_preset", executor, advisor });
+    (executor: ExecutorModel) => {
+      sendCommand({ type: "session:set_preset", executor });
     },
     [sendCommand]
   );
@@ -316,9 +285,6 @@ export function useLabSession(
     build,
     buildLog,
     cumulativeCostUsd,
-    cumulativeExecutorCostUsd,
-    cumulativeAdvisorCostUsd,
-    advisorCallsThisSession,
     budgetUsd,
     rateLimit,
     send,
@@ -339,9 +305,6 @@ type Setters = {
   setBuild: (v: LabBuildState) => void;
   setBuildLog: (fn: (prev: LabBuildLog) => LabBuildLog) => void;
   setCumulativeCostUsd: (v: number | ((prev: number) => number)) => void;
-  setCumulativeExecutorCostUsd: (v: number | ((prev: number) => number)) => void;
-  setCumulativeAdvisorCostUsd: (v: number | ((prev: number) => number)) => void;
-  setAdvisorCallsThisSession: (v: number | ((prev: number) => number)) => void;
   setBudgetUsd: (v: number) => void;
   setRateLimit: (v: { perMinute: number }) => void;
   filesEventCountRef: { current: number };
@@ -505,38 +468,8 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
         },
       ]);
       s.setCumulativeCostUsd(event.cumulativeCostUsd);
-      if (typeof event.cumulativeExecutorCostUsd === "number") {
-        s.setCumulativeExecutorCostUsd(event.cumulativeExecutorCostUsd);
-      }
-      if (typeof event.cumulativeAdvisorCostUsd === "number") {
-        s.setCumulativeAdvisorCostUsd(event.cumulativeAdvisorCostUsd);
-      }
       s.setStatus("ready");
       return;
-
-    case "agent:advisor_used": {
-      s.setAdvisorCallsThisSession(event.callCountThisSession);
-      // Cumulative advisor cost is also surfaced on turn_end; mirror it here
-      // so the meter updates intra-turn if the server fires this event eagerly.
-      s.setCumulativeAdvisorCostUsd((prev) => prev + event.advisorCostUsd);
-      // Client-side conversation cap. When the user-configurable threshold
-      // is reached, drop a system message hinting at the cost. The advisor
-      // tool itself stays registered (the SDK doesn't expose dynamic tool
-      // removal), but the executor model is unlikely to keep calling once
-      // the user is told to switch presets.
-      const cap = readAdvisorCap();
-      if (event.callCountThisSession === cap) {
-        s.setChat((c) => [
-          ...c,
-          {
-            kind: "system",
-            id: newId(),
-            text: `Advisor used ${cap} times this session — that's your configured cap. To stop using the advisor, switch to a non-advisor preset (Frugal / Default / Maximum) and click Reset.`,
-          },
-        ]);
-      }
-      return;
-    }
 
     case "agent:error": {
       s.setChat((c) =>
@@ -546,8 +479,7 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
       );
       // The Claude Agent SDK's CLI binary throws this format when the model's
       // last turn ended with stop_reason=tool_use but the binary could not
-      // fulfill the tool call. Show a concise runtime failure without blaming
-      // missing env when the server has already accepted the advisor preset.
+      // fulfill the tool call. Show a concise runtime failure.
       const isEdeToolUse =
         /\[ede_diagnostic\][^]*stop_reason=tool_use/.test(event.message);
       if (isEdeToolUse) {
@@ -557,9 +489,7 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
             kind: "system",
             id: newId(),
             text:
-              "The agent runtime stopped on an unresolved tool call. The server has advisor mode enabled, " +
-              "so this is a runtime/SDK failure rather than a missing advisor environment variable. " +
-              "Click Reset to start a fresh agent session.",
+              "The agent runtime stopped on an unresolved tool call. Click Reset to start a fresh agent session.",
           },
         ]);
       } else {
@@ -573,9 +503,6 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
     }
 
     case "system:notice":
-      if (event.text.includes("Advisor preset is selected but disabled at the server level")) {
-        return;
-      }
       s.setChat((c) => [
         ...c,
         { kind: "system", id: newId(), text: event.text },

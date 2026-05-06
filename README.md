@@ -76,9 +76,7 @@ A `render.yaml` blueprint is included. Push to GitHub, hit "New → Blueprint" i
 
 The blueprint generates `LAB_SESSION_SECRET` automatically if the Render service
 doesn't already have one. If you manage the service manually instead of through
-the blueprint, set `LAB_SESSION_SECRET` yourself. The blueprint also enables
-advisor presets with `LAB_ADVISOR_ENABLED=true`; if you manage the service
-manually and want the `+advisor` presets to work, set that variable too.
+the blueprint, set `LAB_SESSION_SECRET` yourself.
 
 The blueprint mounts a persistent disk at `/var/data` and sets `LAB_DATA_DIR=/var/data`, so SQLite, project files, and chat history survive deploys/restarts. Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan plus persistent disk storage; static previews avoid per-student build workers.
 
