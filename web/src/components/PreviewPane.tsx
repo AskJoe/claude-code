@@ -5,6 +5,8 @@ type Props = {
   previewBase: string | null;
   /** Changes to force the iframe to reload (e.g. on each build transition). */
   reloadKey?: number | string;
+  buildStatus?: "idle" | "building" | "ok" | "error";
+  buildLastBuildAt?: number | null;
   /** Live file tree from useLabSession — used to derive Astro routes for
    *  the page picker dropdown. */
   files?: FileNode[];
@@ -112,6 +114,8 @@ const CONSOLE_MAX = 400;
 export function PreviewPane({
   previewBase,
   reloadKey = "0",
+  buildStatus = "idle",
+  buildLastBuildAt = null,
   files,
   editMode = false,
   onToggleEditMode,
@@ -223,6 +227,14 @@ export function PreviewPane({
 
   if (!previewBase) {
     return <div className="preview-empty">connecting…</div>;
+  }
+
+  if (buildStatus === "building" && buildLastBuildAt == null) {
+    return (
+      <div className="preview">
+        <div className="preview-empty">starting preview…</div>
+      </div>
+    );
   }
 
   return (

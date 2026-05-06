@@ -386,12 +386,12 @@ function Lab({
       .catch(() => setProject(null));
   }, [projectId]);
 
-  // Iframe reload key: bump on every build transition so the preview
-  // refreshes both when the build starts (→ shows server's "Building…" page)
-  // and when it finishes (→ shows the fresh dist/index.html).
+  // Iframe reload key: bump only after a successful preview build/runtime
+  // refresh. During `building`, keep the current preview mounted instead of
+  // flashing a temporary server page inside the iframe.
   const reloadKey = useMemo(
-    () => `${lab.build.status}-${lab.build.lastBuildAt ?? 0}`,
-    [lab.build.status, lab.build.lastBuildAt]
+    () => `${lab.build.lastBuildAt ?? 0}`,
+    [lab.build.lastBuildAt]
   );
 
   const refreshProject = async () => {
@@ -661,6 +661,8 @@ function Lab({
               <PreviewPane
                 previewBase={lab.previewBase}
                 reloadKey={reloadKey}
+                buildStatus={lab.build.status}
+                buildLastBuildAt={lab.build.lastBuildAt}
                 files={lab.files}
                 editMode={editMode}
                 onToggleEditMode={() => setEditMode((m) => !m)}
