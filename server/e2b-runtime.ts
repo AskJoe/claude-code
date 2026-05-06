@@ -1,6 +1,6 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
-import Sandbox, { type CommandHandle } from "e2b";
+import { Sandbox, type CommandHandle } from "e2b";
 import { log } from "./log.ts";
 import { PREVIEW_EDITOR_RUNTIME } from "./preview-editor-runtime.ts";
 
