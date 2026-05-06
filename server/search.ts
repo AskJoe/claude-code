@@ -3,7 +3,7 @@
  *
  * Endpoint: GET /api/projects/:id/search?q=<term>
  *
- * Walks the session's file tree skipping node_modules / dist / .git / .astro,
+ * Walks the session's file tree skipping node_modules / dist / .git,
  * scans up to 1000 files at most, returns top 50 hits as
  *   { file: string, line: number, text: string }.
  *
@@ -11,7 +11,7 @@
  * matching snippets as { messageId, role, text }.
  *
  * No ripgrep dependency — pure node fs + line scan keeps the binary trim.
- * For most student projects (a few dozen .astro / .css files) this is plenty
+ * For most student projects (a few dozen .html / .css files) this is plenty
  * fast.
  */
 
@@ -28,13 +28,11 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   ".git",
-  ".astro",
   ".cache",
   ".vscode",
   ".idea",
 ]);
 const TEXT_EXT = new Set([
-  ".astro",
   ".html",
   ".css",
   ".scss",

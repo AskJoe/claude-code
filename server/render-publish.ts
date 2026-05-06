@@ -53,8 +53,8 @@ services:
   - type: web
     name: ${name}
     runtime: static
-    buildCommand: npm install && npm run build
-    staticPublishPath: ./dist
+    buildCommand: ""
+    staticPublishPath: .
     branch: ${project.github_default_branch ?? "main"}
     autoDeploy: true
     pullRequestPreviewsEnabled: true

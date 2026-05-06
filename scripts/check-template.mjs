@@ -2,14 +2,13 @@ import { access } from "node:fs/promises";
 import { resolve } from "node:path";
 
 const required = [
-  "templates/astro-basics/package.json",
-  "templates/astro-basics/package-lock.json",
-  "templates/astro-basics/astro.config.mjs",
-  "templates/astro-basics/src/pages/index.astro",
+  "templates/static-site/index.html",
+  "templates/static-site/styles.css",
+  "templates/static-site/script.js",
 ];
 
 for (const path of required) {
   await access(resolve(path));
 }
 
-console.log("Astro starter template files are present.");
+console.log("Static starter template files are present.");

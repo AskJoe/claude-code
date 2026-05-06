@@ -155,7 +155,7 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
             onClick={() => setCreating(true)}
           >
             <div className="picker-card-title">+ New project</div>
-            <div className="picker-card-desc">Empty Astro starter, ready to build.</div>
+            <div className="picker-card-desc">Static HTML/CSS starter, ready to build.</div>
           </button>
         )}
 
@@ -255,9 +255,9 @@ export function ProjectList({ user, onOpen, onOpenAdmin, onLogout }: Props) {
 
         {projects?.length === 0 && !creating && (
           <div className="empty-state picker-empty-rich">
-            <h2 className="empty-headline">Start your first build →</h2>
+            <h2 className="empty-headline">Start your first site →</h2>
             <p className="empty-body">
-              Spin up a fresh Astro starter and ask the agent to build whatever
+              Spin up a fresh static starter and ask the agent to build whatever
               you have in mind.
             </p>
             <button

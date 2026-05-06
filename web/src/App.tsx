@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { ChatPanel } from "./components/ChatPanel.tsx";
 import { CodeView } from "./components/CodeView.tsx";
 import { PreviewPane, type PreviewTextEdit } from "./components/PreviewPane.tsx";
-import { BuildLogDrawer } from "./components/BuildLogDrawer.tsx";
 import { GitHubBadge } from "./components/GitHubBadge.tsx";
 import { ProjectList } from "./components/ProjectList.tsx";
 import { PublishButton } from "./components/PublishButton.tsx";
@@ -386,13 +385,9 @@ function Lab({
       .catch(() => setProject(null));
   }, [projectId]);
 
-  // Iframe reload key: bump only after a successful preview build/runtime
-  // refresh. During `building`, keep the current preview mounted instead of
-  // flashing a temporary server page inside the iframe.
-  const reloadKey = useMemo(
-    () => `${lab.build.lastBuildAt ?? 0}`,
-    [lab.build.lastBuildAt]
-  );
+  // Iframe reload key: source files are served directly, so reload whenever
+  // the server reports a real file change after the startup scan.
+  const reloadKey = `${lab.lastFilesChangedAt ?? 0}`;
 
   const refreshProject = async () => {
     const { projects } = await api.listProjects();
@@ -406,8 +401,8 @@ function Lab({
       ? `It's inside a <${tag}${cls ? ` class="${cls}"` : ""}> element.`
       : "";
     const prompt =
-      `In the project source under \`src/\`, change the text "${edit.oldText}" to "${edit.newText}". ` +
-      `${ctx} Find the matching source file (likely src/pages/, src/components/, or src/layouts/) ` +
+      `In the project source, change the text "${edit.oldText}" to "${edit.newText}". ` +
+      `${ctx} Find the matching source file (usually index.html, another .html file, styles.css, or script.js) ` +
       `and update only that occurrence — don't change anything else.`;
     lab.send(prompt);
   };
@@ -661,8 +656,6 @@ function Lab({
               <PreviewPane
                 previewBase={lab.previewBase}
                 reloadKey={reloadKey}
-                buildStatus={lab.build.status}
-                buildLastBuildAt={lab.build.lastBuildAt}
                 files={lab.files}
                 editMode={editMode}
                 onToggleEditMode={() => setEditMode((m) => !m)}
@@ -676,11 +669,6 @@ function Lab({
               />
             )}
           </div>
-          <BuildLogDrawer
-            build={lab.build}
-            buildLog={lab.buildLog}
-            projectId={projectId}
-          />
         </section>
       </main>
       <HistoryPanel

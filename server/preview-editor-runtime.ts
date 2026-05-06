@@ -15,7 +15,7 @@
  *     chat message into the existing agent pipeline.
  *
  * Designed to be tiny and have zero dependencies — it runs inside the
- * student's built Astro site, where we can't assume any framework.
+ * student's rendered static site, where we can't assume any framework.
  */
 
 export const PREVIEW_EDITOR_RUNTIME = String.raw`

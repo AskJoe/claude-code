@@ -17,8 +17,8 @@ type SaveStatus = "idle" | "saving" | "ok" | "error";
  * Code view — file tree on the left, source of the selected file on the
  * right. The right side is a Monaco editor: read-only by default, switches
  * to editable when the toolbar's ✎ Edit button is on. Cmd/Ctrl+S commits
- * the buffer to disk via PUT /api/projects/:id/files; the auto-builder's
- * chokidar watcher then picks up the change and triggers a rebuild.
+ * the buffer to disk via PUT /api/projects/:id/files; the session watcher
+ * then reports the changed file tree and the preview reloads.
  */
 export function CodeView({ files, previewBase, requestedFile }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
@@ -63,7 +63,7 @@ export function CodeView({ files, previewBase, requestedFile }: Props) {
   // Default-select something useful as soon as the tree fills in.
   useEffect(() => {
     if (selected) return;
-    const candidates = ["src/pages/index.astro", "src/pages/index.tsx", "index.html"];
+    const candidates = ["index.html", "styles.css", "script.js"];
     for (const want of candidates) {
       if (findByPath(files, want)) {
         setSelected(want);
@@ -273,8 +273,7 @@ export function CodeView({ files, previewBase, requestedFile }: Props) {
 
 /**
  * Map a file path to a Monaco language id. Monaco infers from `path` too,
- * but Astro is unknown to it so we map that to html (close enough for syntax
- * highlighting; no real Astro grammar shipped with @monaco-editor/react).
+ * but this keeps common web source files explicit.
  */
 function detectLanguage(path: string): string {
   const ext = path.slice(path.lastIndexOf(".")).toLowerCase();
@@ -291,7 +290,6 @@ function detectLanguage(path: string): string {
       return "javascript";
     case ".html":
     case ".htm":
-    case ".astro":
       return "html";
     case ".css":
       return "css";

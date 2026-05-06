@@ -6,7 +6,7 @@
  * connections — closing the socket only stops the watcher, it does NOT delete
  * the dir. Persistence is what makes "Recent projects" work.
  *
- * Hydration with the Astro starter happens once, when the project is first
+ * Hydration with the static starter happens once, when the project is first
  * created (see projects.ts). Subsequent opens reuse what's on disk.
  */
 
@@ -18,7 +18,6 @@ import type { FileNode } from "../shared/events.ts";
 const HIDDEN_NAMES = new Set([
   "node_modules",
   "dist",
-  ".astro",
   ".git",
   ".vscode",
   ".DS_Store",
@@ -50,7 +49,7 @@ export async function openSession(opts: CreateSessionOptions): Promise<Session> 
     ignoreInitial: false,
     awaitWriteFinish: { stabilityThreshold: 80, pollInterval: 30 },
     ignored: (p: string) =>
-      /\/(node_modules|dist|\.astro|\.git|\.vscode)(\/|$)/.test(p) ||
+      /\/(node_modules|dist|\.git|\.vscode)(\/|$)/.test(p) ||
       p.endsWith("/.DS_Store"),
   });
 
@@ -73,7 +72,7 @@ export async function openSession(opts: CreateSessionOptions): Promise<Session> 
   // in), but we DON'T want to fire onFsEvent for them — that would
   // unnecessarily kick off AutoSyncer/AutoBuilder pushes/builds for files
   // that were already on disk (and would also cause the publish button's
-  // "Rebuilding…" indicator to fire on every page reload).
+  // "recent changes" indicator to fire on every page reload).
   let scannerReady = false;
   watcher.on("ready", () => {
     scannerReady = true;

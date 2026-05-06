@@ -81,11 +81,11 @@ export type LabState = {
   previewBase: string | null;
   chat: ChatItem[];
   files: FileNode[];
-  /** Epoch ms of the last files:changed event. Drives the "Rebuilding…" indicator on the publish button. */
+  /** Epoch ms of the last real files:changed event. Drives preview reloads and publish freshness. */
   lastFilesChangedAt: number | null;
-  /** Build pipeline status from the server's auto-builder. */
+  /** Legacy build state kept for compatibility with older server events. */
   build: LabBuildState;
-  /** Streaming stdout/stderr from the auto-builder, capped at 200 lines. */
+  /** Legacy build stdout/stderr buffer, capped at 200 lines. */
   buildLog: LabBuildLog;
   cumulativeCostUsd: number;
   /** Cost split when an Opus advisor was active during the session.
@@ -368,7 +368,7 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
       s.setFiles(event.files);
       // Skip lastFilesChangedAt update on the first event of each session —
       // that's chokidar's startup scan, not a real edit, and it would
-      // otherwise trigger a bogus "Rebuilding…" on the publish button on
+      // otherwise trigger a bogus file-change signal on
       // every page reload.
       s.filesEventCountRef.current += 1;
       if (s.filesEventCountRef.current > 1) {

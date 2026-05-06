@@ -3,11 +3,9 @@ import type { FileNode } from "../../../shared/events.ts";
 
 type Props = {
   previewBase: string | null;
-  /** Changes to force the iframe to reload (e.g. on each build transition). */
+  /** Changes to force the iframe to reload after source files change. */
   reloadKey?: number | string;
-  buildStatus?: "idle" | "building" | "ok" | "error";
-  buildLastBuildAt?: number | null;
-  /** Live file tree from useLabSession — used to derive Astro routes for
+  /** Live file tree from useLabSession — used to derive HTML pages for
    *  the page picker dropdown. */
   files?: FileNode[];
   editMode?: boolean;
@@ -23,7 +21,7 @@ export type PreviewTextEdit = {
 };
 
 type PageOption = {
-  /** Path appended after previewBase. "" = index, "/about" = about page. */
+  /** Path appended after previewBase. "" = index, "about.html" = page. */
   routePath: string;
   /** Human label for the dropdown row. */
   label: string;
@@ -31,12 +29,9 @@ type PageOption = {
   source: string;
 };
 
-/** Walk the file tree and pick out src/pages/**\/*.{astro,md,mdx} as routes.
- *  Dynamic routes (filenames starting with `[`) are skipped — they need
- *  params at render time and don't preview clean. */
+/** Walk the file tree and pick out static .html files as pages. */
 function derivePages(files: FileNode[]): PageOption[] {
   const out: PageOption[] = [];
-  const PAGE_EXTS = new Set([".astro", ".md", ".mdx", ".html"]);
 
   function walk(nodes: FileNode[]) {
     for (const n of nodes) {
@@ -45,27 +40,26 @@ function derivePages(files: FileNode[]): PageOption[] {
         continue;
       }
       const path = n.path;
-      if (!path.startsWith("src/pages/")) continue;
-      const rel = path.slice("src/pages/".length);
-      if (rel.includes("[")) continue; // dynamic routes — skip
+      if (path.startsWith("uploads/")) continue;
+      const rel = path;
       const dotIdx = rel.lastIndexOf(".");
       if (dotIdx < 0) continue;
       const ext = rel.slice(dotIdx).toLowerCase();
-      if (!PAGE_EXTS.has(ext)) continue;
+      if (ext !== ".html") continue;
       const stem = rel.slice(0, dotIdx); // "about", "blog/post", "index"
-      // Index files map to their parent path. blog/index → blog, top-level
-      // index → "" (the home page).
+      // Index files map to their parent folder. blog/index -> blog/,
+      // top-level index -> "" (the home page).
       let routePath: string;
       let label: string;
       if (stem === "index") {
         routePath = "";
         label = "Home";
       } else if (stem.endsWith("/index")) {
-        routePath = "/" + stem.slice(0, -"/index".length);
-        label = routePath;
+        routePath = `${stem.slice(0, -"/index".length)}/`;
+        label = `/${routePath}`;
       } else {
-        routePath = "/" + stem;
-        label = routePath;
+        routePath = rel;
+        label = `/${routePath}`;
       }
       out.push({ routePath, label, source: path });
     }
@@ -79,8 +73,7 @@ function derivePages(files: FileNode[]): PageOption[] {
     return a.routePath < b.routePath ? -1 : a.routePath > b.routePath ? 1 : 0;
   });
 
-  // Dedupe by routePath — Astro lets you have both .astro and .md for the
-  // same route, but only one builds. First one wins.
+  // Dedupe by routePath. First one wins.
   const seen = new Set<string>();
   return out.filter((p) => {
     if (seen.has(p.routePath)) return false;
@@ -101,10 +94,8 @@ type ConsoleLine = {
 const CONSOLE_MAX = 400;
 
 /**
- * The right-pane preview — always loads `index.html`, which the server
- * resolves to `dist/index.html` after the agent runs `npm run build`. If
- * there's no build yet, the server returns a friendly "not built yet" 404
- * page.
+ * The right-pane preview serves static source files directly from the
+ * project folder. The server injects the console/edit bridge into HTML.
  *
  * Adds a small toolbar (reload / open in new tab / console) and a
  * collapsible console drawer that captures messages forwarded from the
@@ -114,8 +105,6 @@ const CONSOLE_MAX = 400;
 export function PreviewPane({
   previewBase,
   reloadKey = "0",
-  buildStatus = "idle",
-  buildLastBuildAt = null,
   files,
   editMode = false,
   onToggleEditMode,
@@ -132,7 +121,7 @@ export function PreviewPane({
   const pages = useMemo(() => derivePages(files ?? []), [files]);
 
   // Currently-active route. Defaults to "" (Home / index). Sticks to user's
-  // pick across builds; if the picked page disappears (file deleted), fall
+  // pick across edits; if the picked page disappears (file deleted), fall
   // back to home.
   const [currentRoute, setCurrentRoute] = useState<string>("");
   useEffect(() => {
@@ -141,19 +130,16 @@ export function PreviewPane({
     if (!stillExists) setCurrentRoute("");
   }, [pages, currentRoute]);
 
-  // index when home, otherwise navigate to /<route> — server resolves
-  // /preview/<id>/<route> to dist/<route>/index.html (Astro's default
-  // folder-mode build) or dist/<route>.html (file-mode).
   const src = !previewBase
     ? ""
     : currentRoute === ""
       ? `${previewBase}index.html`
-      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
+      : `${previewBase}${currentRoute}`;
   const externalUrl = !previewBase
     ? ""
     : currentRoute === ""
       ? previewBase
-      : `${previewBase}${currentRoute.replace(/^\//, "")}`;
+      : `${previewBase}${currentRoute}`;
 
   const postEditMode = useCallback(() => {
     if (!src) return;
@@ -214,7 +200,7 @@ export function PreviewPane({
   }, [onEditText, onToggleEditMode]);
 
   // Clear the log when the iframe reloads so the drawer shows fresh output
-  // for the new page rather than piling indefinitely across builds.
+  // for the new page rather than piling indefinitely across reloads.
   useEffect(() => {
     setLogs([]);
   }, [reloadKey, bump, previewBase]);
@@ -227,14 +213,6 @@ export function PreviewPane({
 
   if (!previewBase) {
     return <div className="preview-empty">connecting…</div>;
-  }
-
-  if (buildStatus === "building" && buildLastBuildAt == null) {
-    return (
-      <div className="preview">
-        <div className="preview-empty">starting preview…</div>
-      </div>
-    );
   }
 
   return (
@@ -300,7 +278,7 @@ export function PreviewPane({
 }
 
 /**
- * Dropdown listing every Astro page found in src/pages/. Hidden when the
+ * Dropdown listing every HTML page found in the project. Hidden when the
  * project has zero or one pages (no point picking when there's nothing to
  * pick from).
  */

@@ -133,7 +133,7 @@ async function main() {
     JSON.stringify({
       type: "user:message",
       text:
-        'Edit src/pages/index.astro to be a coffee shop landing page for "Mountain Brew" — single-screen hero with a tagline. After editing, run `npm run build`.',
+        'Edit index.html and styles.css to be a coffee shop landing page for "Mountain Brew" — single-screen hero with a tagline. Do not add a framework or run a build command.',
     })
   );
 

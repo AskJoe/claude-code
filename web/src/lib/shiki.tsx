@@ -18,7 +18,6 @@ const LANGS = [
   "tsx",
   "javascript",
   "jsx",
-  "astro",
   "css",
   "html",
   "json",
@@ -92,8 +91,6 @@ export function extToLang(filename: string): string {
       return "javascript";
     case "jsx":
       return "jsx";
-    case "astro":
-      return "astro";
     case "css":
     case "pcss":
     case "scss":

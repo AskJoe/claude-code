@@ -297,12 +297,10 @@ function isPreviewable(name: string): boolean {
   const ext = name.slice(name.lastIndexOf(".")).toLowerCase();
   return [
     ".html", ".htm",
-    ".astro",
     ".css",
     ".js", ".mjs", ".ts", ".tsx", ".jsx",
     ".json",
     ".txt", ".md",
     ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-    ".astro",
   ].includes(ext);
 }

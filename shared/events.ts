@@ -69,21 +69,16 @@ export type ServerEvent =
   // chat. Live user messages are added client-side on send; the server does
   // NOT echo them in the live flow (would cause duplicates).
   | { type: "chat:user_message"; text: string }
-  // Build pipeline status. Emitted by the auto-builder on each transition
-  // between idle / building / ok / error. The lab uses this to keep the
-  // preview iframe in sync with current source — the iframe reloads on `ok`,
-  // shows a "Building…" overlay during `building`, and surfaces the error
-  // pre-formatted on `error`.
+  // Legacy build pipeline status. Static preview no longer emits this, but
+  // keeping the event shape avoids breaking older client/server bundles during
+  // rolling deploys.
   | {
       type: "build:state";
       status: "idle" | "building" | "ok" | "error";
       lastBuildAt: number | null;
       lastError: string | null;
     }
-  // Streaming chunk of build stdout/stderr from `npm run build`. Emitted by
-  // the auto-builder so the BuildLogDrawer can show live build output. The
-  // server keeps the last 200 lines per session in memory; on reconnect /
-  // session open the buffered tail can be replayed.
+  // Legacy build stdout/stderr chunk. Static preview no longer emits this.
   | {
       type: "build:log";
       stream: "stdout" | "stderr";

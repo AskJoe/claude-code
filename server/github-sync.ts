@@ -420,7 +420,7 @@ async function ensureGitignore(dir: string): Promise<void> {
   try {
     existing = await fs.readFile(gi, "utf-8");
   } catch {}
-  const needed = ["node_modules", "dist", ".astro", ".DS_Store"];
+  const needed = ["node_modules", "dist", ".DS_Store"];
   const lines = new Set(existing.split("\n").map((l) => l.trim()).filter(Boolean));
   let dirty = false;
   for (const want of needed) {

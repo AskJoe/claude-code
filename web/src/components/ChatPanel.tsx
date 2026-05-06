@@ -992,7 +992,7 @@ function ChatEmpty({ onSample }: { onSample: (text: string) => void }) {
       <h2 className="empty-headline">Ask the agent to build something.</h2>
       <p className="empty-body">
         Pick a starter below or write your own. The agent will create the files
-        and rebuild the preview as it goes.
+        and refresh the preview as it goes.
       </p>
       <div className="sample-prompts">
         {SAMPLE_PROMPTS.map((p) => (

@@ -31,7 +31,7 @@ import { startAgent } from "./agent.ts";
 import { getSettings } from "./settings.ts";
 import { registerAdminRoutes } from "./admin.ts";
 import { openSession, type Session } from "./sessions.ts";
-import { E2B_RUNTIME_ENABLED, PORT } from "./env.ts";
+import { PORT } from "./env.ts";
 import { createRateLimiter } from "./rate-limit.ts";
 import {
   authMiddleware,
@@ -72,12 +72,6 @@ import {
   touchProject,
 } from "./db.ts";
 import { connectExistingRepoForProject, startAutoSync, type AutoSyncer } from "./github-sync.ts";
-import { startAutoBuilder, type AutoBuilder, type BuildState } from "./auto-builder.ts";
-import {
-  startE2BPreviewRuntime,
-  type E2BPreviewRuntime,
-  type E2BState,
-} from "./e2b-runtime.ts";
 import { PREVIEW_EDITOR_RUNTIME } from "./preview-editor-runtime.ts";
 import {
   buildDeployUrl,
@@ -497,59 +491,18 @@ mountCostSummary(app);
 // Transcript export (GET /api/projects/:id/sessions/:sid/export)
 mountExport(app);
 
-// Auto-builder restart — kill and respawn this project's chokidar/build
-// pipeline. The watcher and builder are owned by the live WebSocket session,
-// so we look up the active builder for this project and dispose+recreate
-// it. Safe to call when no session is open; returns ok:false in that case.
+// Legacy endpoint kept for already-loaded clients. Static previews do not
+// have a builder process; saving a file updates the served source directly.
 app.post("/api/projects/:id/builder/restart", authMiddleware, async (c) => {
   const user = c.get("user");
   const id = Number(c.req.param("id"));
   if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
   const project = getProjectFor(user.id, id);
   if (!project) return c.json({ error: "not found" }, 404);
-
-  const existing = liveBuilders.get(id);
-  const e2bRuntime = liveE2BRuntimes.get(id);
-  if (E2B_RUNTIME_ENABLED && e2bRuntime) {
-    try {
-      await e2bRuntime.restart();
-      log.info("e2b preview runtime restarted", { projectId: id, userId: user.id });
-      return c.json({ ok: true });
-    } catch (err: any) {
-      const message = err?.message ?? String(err);
-      log.error("e2b preview runtime restart failed", {
-        projectId: id,
-        userId: user.id,
-        msg: message.slice(0, 200),
-      });
-      return c.json({ ok: false, reason: message }, 500);
-    }
-  }
-
-  if (!existing) {
-    return c.json({ ok: false, reason: "no live session" }, 200);
-  }
-
-  // Tear down the old builder and start a fresh one. The active WS
-  // connection still owns its own variable reference; we replace ours in
-  // liveBuilders so future preview-pane reconciliation reads the new one.
-  // The active WS's `autoBuilder` ref will keep pointing at the disposed
-  // instance — that's harmless: dispose() guards against further work and
-  // the next session open replaces it.
-  existing.dispose();
-
-  const fresh = startAutoBuilder({
-    projectId: id,
-    projectDir: projectDir(id),
-    onStateChange: () => {
-      // No WS broadcast from the manual restart path — the next file change
-      // will surface the new state through the existing session's pipeline.
-    },
+  return c.json({
+    ok: true,
+    reason: "static preview serves source files directly; no builder restart needed",
   });
-  liveBuilders.set(id, fresh);
-  fresh.triggerNow();
-  log.info("auto-builder restarted", { projectId: id, userId: user.id });
-  return c.json({ ok: true });
 });
 
 // PUT /api/projects/:id/files — write a single text file inside the session
@@ -583,8 +536,8 @@ app.put("/api/projects/:id/files", authMiddleware, async (c) => {
   }
 
   // Reject obvious binary keys / writing into unsafe locations.
-  if (/(^|\/)(node_modules|dist|\.git|\.astro)(\/|$)/.test(path)) {
-    return c.json({ error: "cannot write inside build/vendor dirs" }, 400);
+  if (/(^|\/)(node_modules|dist|\.git)(\/|$)/.test(path)) {
+    return c.json({ error: "cannot write inside generated/vendor dirs" }, 400);
   }
   // Cap payload — Monaco shouldn't be saving giant files, but be safe.
   if (content.length > 2 * 1024 * 1024) {
@@ -644,8 +597,6 @@ app.post("/api/github/disconnect", authMiddleware, (c) => {
 // ── Preview ──────────────────────────────────────────────────────────────────
 
 const liveSessions = new Map<number, Session>();
-const liveBuilders = new Map<number, AutoBuilder>();
-const liveE2BRuntimes = new Map<number, E2BPreviewRuntime>();
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -674,40 +625,13 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
 
   const wildcard = c.req.path.replace(`/preview/${projectId}/`, "") || "index.html";
   const raw = c.req.query("raw") === "1";
-  if (E2B_RUNTIME_ENABLED && !raw) {
-    const runtime = liveE2BRuntimes.get(projectId);
-    if (runtime) {
-      return runtime.proxy(wildcard, new URL(c.req.url));
-    }
-  }
-  const isHtmlRoot = wildcard === "index.html" || wildcard.endsWith("/index.html");
 
-  // Stale-detect: if a build is in flight, or src/ has been modified after
-  // the last successful build, return a "Building…" placeholder for the root
-  // page request. This is what prevents the preview from confidently showing
-  // a stale dist after the user edited source.
-  if (isHtmlRoot) {
-    const builder = liveBuilders.get(projectId);
-    if (builder) {
-      const state = builder.status();
-      const stale = state.status !== "ok" && state.lastBuildAt === null
-        ? await isSrcNewerThanDist(session.rootDir)
-        : state.status === "building" || (await isSrcNewerThanDist(session.rootDir));
-      if (state.status === "building") {
-        return c.html(buildingPage("Cloudwise Lab is rebuilding your site… (1–10 seconds)"), 200);
-      }
-      if (stale && state.status !== "error") {
-        return c.html(buildingPage("Source changed. Cloudwise Lab will rebuild within ~8 seconds."), 200);
-      }
-      if (state.status === "error") {
-        return c.html(buildErrorPage(state.lastError ?? "Unknown build error"), 200);
-      }
-    }
-  }
-
-  // Astro builds into dist/. Try dist/<path> first, then <path> at root.
+  // Static runtime: serve the student's source files directly from the
+  // project root. Routes are file-based: /about -> about.html,
+  // /docs/ -> docs/index.html, /style.css -> style.css.
   let abs: string | null = null;
-  for (const candidate of [pjoin("dist", wildcard), wildcard]) {
+  const candidates = previewCandidates(wildcard);
+  for (const candidate of candidates) {
     let resolved: string;
     try {
       resolved = await resolveSessionPath(session, candidate);
@@ -736,9 +660,9 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
 
   if (!abs) {
     return c.html(
-      `<!doctype html><html><head><meta charset="utf-8"><title>not built yet</title></head>
+      `<!doctype html><html><head><meta charset="utf-8"><title>file not found</title></head>
        <body style="font-family:system-ui;color:#666;padding:32px;text-align:center;">
-         <p style="font-size:14px;">No build output yet. Ask the agent to <code>npm run build</code>, then this preview will fill in.</p>
+         <p style="font-size:14px;">Static preview file not found: <code>${escapeHtml(wildcard)}</code></p>
        </body></html>`,
       404
     );
@@ -754,12 +678,8 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
   // or for non-HTML assets.
   if (!raw && ext === ".html") {
     const html = buf.toString("utf-8");
-    // Astro builds emit root-rooted asset paths (`/_astro/...css`,
-    // `/favicon.svg`, etc.). The preview iframe is served from
-    // `/preview/<id>/`, so a link like `<link href="/_astro/foo.css">`
-    // would resolve against the lab's root and 404. Prefix any root-
-    // rooted href/src/srcset path with `/preview/<id>` so the browser
-    // fetches it from the per-project preview namespace.
+    // Prefix root-rooted href/src/srcset paths with the project preview
+    // namespace so `/styles.css` resolves to `/preview/<id>/styles.css`.
     const rewritten = rewriteRootPaths(html, projectId);
     const injected = injectEditorRuntime(rewritten);
     return new Response(injected, {
@@ -793,10 +713,25 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
 });
 
 /**
- * Astro builds emit root-rooted asset paths like `/_astro/foo.css` and
- * `/favicon.svg`. The preview iframe is served from `/preview/<id>/`, so
- * those URLs need to be prefixed with the same path or the browser fetches
- * them from the lab's root (where they 404).
+ * Returns the source-file candidates for a preview URL path.
+ */
+function previewCandidates(wildcard: string): string[] {
+  const clean = wildcard.replace(/^\/+/, "") || "index.html";
+  const out = new Set<string>();
+  out.add(clean);
+  if (clean.endsWith("/")) {
+    out.add(pjoin(clean, "index.html"));
+  } else if (!clean.includes(".") && clean !== "index.html") {
+    out.add(`${clean}.html`);
+    out.add(pjoin(clean, "index.html"));
+  }
+  return [...out];
+}
+
+/**
+ * The preview iframe is served from `/preview/<id>/`, so root-rooted URLs
+ * need to be prefixed with the same path or the browser fetches them from
+ * the lab's root.
  *
  * Rewrites `(href|src|srcset)="/..."` to `(href|src|srcset)="/preview/<id>/..."`
  * for any path that:
@@ -804,8 +739,7 @@ app.get("/preview/:projectId/*", authMiddleware, async (c) => {
  *     relative URLs), AND
  *   - isn't already prefixed with `/preview/`.
  *
- * This catches Astro's `_astro/`, `favicon`, `images/`, anything in `public/`,
- * and any in-site links the user may have added.
+ * This catches CSS/JS/images and any in-site links the user may have added.
  */
 function rewriteRootPaths(html: string, projectId: number): string {
   const prefix = `/preview/${projectId}`;
@@ -867,8 +801,6 @@ app.get(
     let agent: ReturnType<typeof startAgent> | null = null;
     let project: PublicProject | null = null;
     let autoSync: AutoSyncer | null = null;
-    let autoBuilder: AutoBuilder | null = null;
-    let e2bRuntime: E2BPreviewRuntime | null = null;
     let emitRaw: (e: ServerEvent) => void = () => {};
     // Active chat session row for this WS — every persisted message gets
     // tagged with chat_session_id so the sessions sidebar can browse history.
@@ -956,52 +888,12 @@ app.get(
         projectDir: projectDir(project.id),
       });
 
-      const emitBuildState = (s: BuildState | E2BState) => {
-        emitRaw({
-          type: "build:state",
-          status: s.status,
-          lastBuildAt: s.lastBuildAt,
-          lastError: s.lastError,
-        });
-      };
-      const emitBuildLog = (line: { stream: "stdout" | "stderr"; chunk: string; ts: number }) => {
-        emitRaw({
-          type: "build:log",
-          stream: line.stream,
-          chunk: line.chunk,
-          ts: line.ts,
-        });
-      };
-
-      if (E2B_RUNTIME_ENABLED) {
-        e2bRuntime = startE2BPreviewRuntime({
-          projectId: project.id,
-          projectDir: projectDir(project.id),
-          userId: user.id,
-          onStateChange: emitBuildState,
-          onLog: emitBuildLog,
-        });
-        liveE2BRuntimes.set(project.id, e2bRuntime);
-      } else {
-        // The local auto-builder rebuilds dist/ from src/ on every change so
-        // the preview always reflects the latest source.
-        autoBuilder = startAutoBuilder({
-          projectId: project.id,
-          projectDir: projectDir(project.id),
-          onStateChange: emitBuildState,
-          onLog: emitBuildLog,
-        });
-        liveBuilders.set(project.id, autoBuilder);
-      }
-
       session = await openSession({
         projectId: project.id,
         rootDir: projectDir(project.id),
         onChange: (files) => emitRaw({ type: "files:changed", files }),
-        onFsEvent: (kind, path) => {
+        onFsEvent: () => {
           autoSync?.notifyChange();
-          e2bRuntime?.notifyFsEvent(kind, path);
-          autoBuilder?.notifyChange();
         },
       });
       liveSessions.set(project.id, session);
@@ -1013,17 +905,6 @@ app.get(
         advisor: wsAdvisor,
       });
 
-      // Reconcile stale dist on session open: if src is newer than dist (or
-      // there's no dist), kick off a build immediately so the preview comes
-      // up fresh. This is the fix for "I had Mountain Brew showing in the
-      // preview but the source has been default Astro the whole time."
-      // Optional chaining guard mirrors the onFsEvent callback above —
-      // autoBuilder can be unset if the WS races with teardown during the
-      // `await openSession(...)` window.
-      if (!E2B_RUNTIME_ENABLED && (await isSrcNewerThanDist(projectDir(project.id)))) {
-        autoBuilder?.triggerNow();
-      }
-
       emitRaw({
         type: "session:ready",
         sessionId: String(project.id),
@@ -1031,20 +912,6 @@ app.get(
         budgetUsd: agent.budgetUsd(),
         rateLimit: { perMinute: sessionRateLimit },
       });
-
-      // Replay buffered build log lines so a reconnected client sees the tail
-      // of the most recent build without a fresh rebuild.
-      const logBuffer = autoBuilder?.logBuffer() ?? e2bRuntime?.logBuffer() ?? [];
-      if (logBuffer.length > 0) {
-        for (const line of logBuffer) {
-          emitRaw({
-            type: "build:log",
-            stream: line.stream,
-            chunk: line.chunk,
-            ts: line.ts,
-          });
-        }
-      }
 
       // Replay history AFTER session:ready so the client knows where to put it.
       for (const m of history) {
@@ -1082,16 +949,6 @@ app.get(
         }
         autoSync.dispose();
         autoSync = null;
-      }
-      if (autoBuilder) {
-        if (project) liveBuilders.delete(project.id);
-        autoBuilder.dispose();
-        autoBuilder = null;
-      }
-      if (e2bRuntime) {
-        if (project) liveE2BRuntimes.delete(project.id);
-        await e2bRuntime.dispose();
-        e2bRuntime = null;
       }
     };
 
@@ -1214,95 +1071,6 @@ app.get(
   })
 );
 
-/**
- * Returns true if any file under `<rootDir>/src/` has a newer mtime than
- * `<rootDir>/dist/index.html`. Used to detect when the preview would serve
- * stale build output. If dist/index.html doesn't exist, returns true (we
- * can't preview without a build). Cheap enough to call per request — caps
- * at the first newer file it finds via a depth-limited walk.
- */
-async function isSrcNewerThanDist(rootDir: string): Promise<boolean> {
-  const { stat, readdir } = await import("node:fs/promises");
-  const { join } = await import("node:path");
-  let distMtime: number;
-  try {
-    const s = await stat(join(rootDir, "dist", "index.html"));
-    distMtime = s.mtimeMs;
-  } catch {
-    return true; // no dist at all → the user needs a build
-  }
-  const walk = async (dir: string, depth = 0): Promise<boolean> => {
-    if (depth > 6) return false;
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return false;
-    }
-    for (const e of entries) {
-      const abs = join(dir, e.name);
-      if (e.isDirectory()) {
-        if (await walk(abs, depth + 1)) return true;
-      } else {
-        try {
-          const s = await stat(abs);
-          if (s.mtimeMs > distMtime) return true;
-        } catch {}
-      }
-    }
-    return false;
-  };
-  // Walk a few directories that affect the build. src/ is the obvious one;
-  // package.json, astro.config.mjs, public/ also invalidate dist.
-  const checks = [
-    join(rootDir, "src"),
-    join(rootDir, "public"),
-  ];
-  for (const dir of checks) {
-    if (await walk(dir)) return true;
-  }
-  for (const file of ["package.json", "astro.config.mjs", "tsconfig.json"]) {
-    try {
-      const s = await stat(join(rootDir, file));
-      if (s.mtimeMs > distMtime) return true;
-    } catch {}
-  }
-  return false;
-}
-
-function buildingPage(message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Building…</title>
-    <meta http-equiv="refresh" content="3">
-    <style>
-      body { font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; padding: 24px; }
-      .card { text-align: center; max-width: 360px; }
-      .spinner { width: 28px; height: 28px; border: 3px solid #2a3340; border-top-color: #f5a524; border-radius: 50%; margin: 0 auto 16px; animation: spin 0.8s linear infinite; }
-      @keyframes spin { to { transform: rotate(360deg); } }
-      p { color: #8b949e; font-size: 14px; line-height: 1.5; }
-      strong { color: #f5a524; }
-    </style>
-    </head>
-    <body><div class="card">
-      <div class="spinner"></div>
-      <p><strong>Building…</strong><br>${escapeHtml(message)}</p>
-    </div></body></html>`;
-}
-
-function buildErrorPage(message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Build error</title>
-    <style>
-      body { font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #e6edf3; padding: 24px; margin: 0; }
-      h1 { color: #f85149; font-size: 16px; margin: 0 0 12px 0; font-family: ui-monospace, SF Mono, Menlo, monospace; }
-      pre { background: #161b22; border: 1px solid #2a3340; padding: 16px; border-radius: 6px; font-family: ui-monospace, SF Mono, Menlo, monospace; font-size: 12px; line-height: 1.5; overflow: auto; white-space: pre-wrap; word-break: break-word; color: #e6edf3; max-height: calc(100vh - 100px); }
-      .hint { color: #8b949e; font-size: 12px; margin-top: 12px; }
-    </style></head>
-    <body>
-      <h1>⚠ Build failed</h1>
-      <pre>${escapeHtml(message)}</pre>
-      <p class="hint">Ask the agent to fix the error above. The preview will reload automatically once the next build succeeds.</p>
-    </body></html>`;
-}
-
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -1401,7 +1169,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     port: info.port,
     auth: REQUIRE_AUTH ? "required" : "off",
     githubOauth: APP_CONFIGURED ? "configured" : "off",
-    runtime: E2B_RUNTIME_ENABLED ? "e2b" : "local",
+    preview: "static",
     advisor: process.env.LAB_ADVISOR_ENABLED === "1" ||
       process.env.LAB_ADVISOR_ENABLED === "true"
       ? "enabled"

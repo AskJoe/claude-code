@@ -50,7 +50,7 @@ export const COMMANDS: Command[] = [
   { id: "theme-system", label: "Theme: follow system", group: "Theme", action: (c) => c.setTheme("system") },
 
   // Project
-  { id: "restart-preview", label: "Restart preview / auto-builder", group: "Project", action: (c) => c.notify("/restart preview — not yet wired") },
+  { id: "restart-preview", label: "Reload preview", group: "Project", action: (c) => c.notify("/reload preview — use the preview refresh button") },
   { id: "cost", label: "Show cost dashboard", group: "Project", action: (c) => c.showCost() },
   { id: "doctor", label: "Run connectivity + auth check", group: "Project", action: (c) => c.notify("/doctor — not yet wired") },
   { id: "share", label: "Generate share link", group: "Project", action: (c) => c.notify("/share — not yet wired") },

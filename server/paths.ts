@@ -11,4 +11,4 @@ export const DATA_ROOT = process.env.LAB_DATA_DIR
 
 export const DB_PATH = resolve(DATA_ROOT, "db", "lab.sqlite");
 export const SESSIONS_ROOT = resolve(DATA_ROOT, "sessions");
-export const TEMPLATE_DIR = resolve(APP_ROOT, "templates", "astro-basics");
+export const TEMPLATE_DIR = resolve(APP_ROOT, "templates", "static-site");

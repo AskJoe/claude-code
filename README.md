@@ -4,11 +4,11 @@ Embedded Claude-Code-style chat experience for Cloudwise Academy course students
 
 ## Where this fits
 
-Standalone Node + React app at `lab.cloudwise.academy` that students reach via SSO from a Cloudwise Academy course page. Each lesson boots a fresh per-student scratch directory on Joe's server. The Claude Agent SDK runs server-side with file tools scoped to that directory. Browser shows chat + live file tree + preview iframe.
+Standalone Node + React app at `lab.cloudwise.academy` that students reach via SSO from a Cloudwise Academy course page. Each project gets a persistent per-student working directory on Joe's server. The Claude Agent SDK runs server-side with file tools scoped to that directory. Browser shows chat + live file tree + preview iframe.
 
 ## What this is
 
-A single-page chat experience that *feels* like Claude Code, running on Joe's server with Joe's tokens. Students get a chat panel, a live file tree, and a preview iframe. The agent can Read/Write/Edit files and run Bash, all inside a per-student sandbox dir. Closing the tab disposes the agent and removes the sandbox.
+A single-page chat experience that *feels* like Claude Code, running on Joe's server with Joe's tokens. Students get a chat panel, a live file tree, and a preview iframe. The agent can Read/Write/Edit files and run Bash, all inside a per-student project dir. Closing the tab disposes the agent and watcher, but project files persist.
 
 No accounts to set up, no install, no hard thinking — Joe wraps a course around it, students follow along.
 
@@ -25,7 +25,7 @@ This launches:
 - the Hono backend on `http://localhost:3101` (HTTP + WebSocket + preview static handler)
 - the Vite dev server on `http://localhost:3000` (proxies `/ws`, `/preview`, `/health` → backend)
 
-Open `http://localhost:3000` in a browser. You'll see three panes: chat (left), file tree (middle), preview (right). Type a prompt — `Build a coffee shop landing page` — and watch the agent stream tool calls into chat, files appear in the tree in real time, and `index.html` auto-render in the preview iframe.
+Open `http://localhost:3000` in a browser. You'll see three panes: chat (left), file tree (middle), preview (right). Type a prompt — `Build a coffee shop landing page` — and watch the agent stream tool calls into chat, files appear in the tree in real time, and `index.html` render directly in the preview iframe.
 
 Smoke test (server must already be running):
 
@@ -80,7 +80,7 @@ the blueprint, set `LAB_SESSION_SECRET` yourself. The blueprint also enables
 advisor presets with `LAB_ADVISOR_ENABLED=true`; if you manage the service
 manually and want the `+advisor` presets to work, set that variable too.
 
-The blueprint mounts a persistent disk at `/var/data` and sets `LAB_DATA_DIR=/var/data`, so SQLite, project files, and chat history survive deploys/restarts. Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan plus persistent disk storage, fits ~30 concurrent students.
+The blueprint mounts a persistent disk at `/var/data` and sets `LAB_DATA_DIR=/var/data`, so SQLite, project files, and chat history survive deploys/restarts. Add a custom domain (`lab.cloudwise.academy` → ALIAS the Render URL). Cost: $7/mo starter plan plus persistent disk storage; static previews avoid per-student build workers.
 
 ### Architecture (Phase 1)
 

@@ -5,7 +5,7 @@
  *   2. Send a build prompt; verify Write tool calls and files appear.
  *   3. Verify the preview URL serves real HTML.
  *   4. Send a long-running prompt and abort it mid-flight.
- *   5. Issue session:reset; verify the file tree empties.
+ *   5. Issue session:reset; verify a fresh chat session starts while files stay.
  *   6. Burst 25 messages; expect warn:rate_limited.
  */
 
@@ -62,7 +62,7 @@ const step1_buildAndPreview: Step = async () => {
 
   send({
     type: "user:message",
-    text: 'Edit src/pages/index.astro to be a coffee shop landing page for "Mountain Brew" — single-screen hero with shop name, one-line tagline, and a "Visit Us" button. Warm coffee colors via a <style> block. After editing, run `npm run build` so the preview reflects the change.',
+    text: 'Edit index.html and styles.css to be a coffee shop landing page for "Mountain Brew" — single-screen hero with shop name, one-line tagline, and a "Visit Us" button. Use warm coffee colors. Do not add a framework or run a build command.',
   });
 
   const turnEnd = await waitFor((e) => e.type === "agent:turn_end");
@@ -107,14 +107,6 @@ const step3_reset: Step = async () => {
   console.log("▶ step 3: reset");
   send({ type: "session:reset" });
   await waitFor((e) => e.type === "session:reset_done", 15_000);
-  // After reset, files:changed should arrive with an empty tree.
-  const empty = await waitFor(
-    (e) => e.type === "files:changed" && Array.isArray(e.files) && e.files.length === 0,
-    5_000
-  ).catch(() => null);
-  if (empty) console.log("  ✓ files:changed empty after reset");
-  else console.log("  ⚠ no empty files:changed observed (may have arrived before reset_done)");
-
   const ready2 = await waitFor((e) => e.type === "session:ready", 5_000);
   console.log(`  ✓ new session id=${ready2.sessionId}`);
 };

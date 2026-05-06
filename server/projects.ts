@@ -3,7 +3,7 @@
  *
  * Each project has:
  *   - a row in the `projects` table
- *   - a directory at `sessions/<projectId>/` containing the Astro starter
+ *   - a directory at `sessions/<projectId>/` containing the static starter
  *     copy + whatever the agent has written
  *   - a chat transcript in the `messages` table
  *   - optionally, a connected GitHub repo
@@ -37,7 +37,7 @@ export async function projectDirExists(projectId: number): Promise<boolean> {
 }
 
 /**
- * Creates a new project for a user, hydrates its dir from the Astro starter,
+ * Creates a new project for a user, hydrates its dir from the static starter,
  * and returns the row.
  */
 export async function createProjectFor(
@@ -64,7 +64,7 @@ export async function createProjectFor(
 }
 
 /**
- * Ensures a project directory contains the Astro starter. This is used both on
+ * Ensures a project directory contains the static starter. This is used both on
  * create and on open so old projects created while the template was missing can
  * self-heal without replacing user files.
  */
@@ -73,7 +73,7 @@ export async function ensureProjectStarter(projectId: number): Promise<void> {
   await mkdir(dir, { recursive: true });
 
   try {
-    await stat(join(dir, "package.json"));
+    await stat(join(dir, "index.html"));
     return;
   } catch (err: any) {
     if (err.code !== "ENOENT") throw err;
@@ -89,7 +89,7 @@ export async function ensureProjectStarter(projectId: number): Promise<void> {
         filter: (source) => {
           const parts = source.split(/[\\/]/g);
           return !parts.some((part) =>
-            ["node_modules", "dist", ".astro", ".git"].includes(part)
+            ["node_modules", "dist", ".git"].includes(part)
           );
         },
       });
@@ -99,7 +99,7 @@ export async function ensureProjectStarter(projectId: number): Promise<void> {
   } catch (err: any) {
     if (err.code === "ENOENT") {
       throw new Error(
-        `Astro starter template missing at ${TEMPLATE_DIR}; run npm run prepare-template during build`
+        `Static starter template missing at ${TEMPLATE_DIR}; run npm run prepare-template during build`
       );
     }
     throw err;
