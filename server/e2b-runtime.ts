@@ -43,11 +43,9 @@ type RuntimeInput = {
 type SandboxInstance = Awaited<ReturnType<typeof Sandbox.create>>;
 type WriteEntry = { path: string; data: ArrayBuffer };
 
-export async function startE2BPreviewRuntime(
-  input: RuntimeInput
-): Promise<E2BPreviewRuntime> {
+export function startE2BPreviewRuntime(input: RuntimeInput): E2BPreviewRuntime {
   const runtime = new E2BRuntime(input);
-  await runtime.start();
+  void runtime.start();
   return runtime;
 }
 
@@ -77,19 +75,18 @@ class E2BRuntime implements E2BPreviewRuntime {
     this.setState({ status: "building", lastError: null });
     this.pushLog("stdout", "Starting E2B sandbox for exact Astro preview...\n");
 
-    this.sandbox = await Sandbox.create({
-      timeoutMs: SANDBOX_TIMEOUT_MS,
-      metadata: {
-        app: "cloudwise-lab",
-        projectId: String(this.input.projectId),
-        userId: String(this.input.userId),
-      },
-      network: {
-        allowPublicTraffic: false,
-      },
-    });
-
     try {
+      this.sandbox = await Sandbox.create({
+        timeoutMs: SANDBOX_TIMEOUT_MS,
+        metadata: {
+          app: "cloudwise-lab",
+          projectId: String(this.input.projectId),
+          userId: String(this.input.userId),
+        },
+        network: {
+          allowPublicTraffic: false,
+        },
+      });
       await this.fullSync();
       await this.installDependencies();
       await this.startDevServer();

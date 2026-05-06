@@ -964,7 +964,7 @@ app.get(
       };
 
       if (E2B_RUNTIME_ENABLED) {
-        e2bRuntime = await startE2BPreviewRuntime({
+        e2bRuntime = startE2BPreviewRuntime({
           projectId: project.id,
           projectDir: projectDir(project.id),
           userId: user.id,
@@ -1382,6 +1382,7 @@ const server = serve({ fetch: app.fetch, port: PORT }, (info) => {
     port: info.port,
     auth: REQUIRE_AUTH ? "required" : "off",
     githubOauth: APP_CONFIGURED ? "configured" : "off",
+    runtime: E2B_RUNTIME_ENABLED ? "e2b" : "local",
     nodeEnv: process.env.NODE_ENV ?? "development",
   });
 });

@@ -194,12 +194,39 @@ export function useLabSession(
     const wsUrl = `${proto}://${location.host}/ws?${params.toString()}`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    let closedByCleanup = false;
+    let receivedReady = false;
+    let reportedStartupFailure = false;
 
     ws.addEventListener("open", () => setStatus("connecting"));
-    ws.addEventListener("error", () => setStatus("error"));
-    ws.addEventListener("close", () =>
-      setStatus((s) => (s === "error" ? "error" : "closed"))
-    );
+    ws.addEventListener("error", () => {
+      setStatus("error");
+      reportedStartupFailure = true;
+      setChat((c) => [
+        ...c,
+        {
+          kind: "error",
+          id: newId(),
+          message:
+            "Connection failed before the project session could start. Check the Render logs for the WebSocket request and runtime startup error.",
+        },
+      ]);
+    });
+    ws.addEventListener("close", () => {
+      if (!closedByCleanup && !receivedReady && !reportedStartupFailure) {
+        reportedStartupFailure = true;
+        setChat((c) => [
+          ...c,
+          {
+            kind: "error",
+            id: newId(),
+            message:
+              "Project session closed before it became ready. The server may still be starting the preview runtime; refresh after the deploy finishes or check Render logs.",
+          },
+        ]);
+      }
+      setStatus((s) => (s === "error" ? "error" : "closed"));
+    });
 
     ws.addEventListener("message", (evt) => {
       let event: ServerEvent;
@@ -208,6 +235,7 @@ export function useLabSession(
       } catch {
         return;
       }
+      if (event.type === "session:ready") receivedReady = true;
       handleServerEvent(event, {
         setStatus,
         setSessionId,
@@ -228,6 +256,7 @@ export function useLabSession(
     });
 
     return () => {
+      closedByCleanup = true;
       ws.close();
     };
   }, [projectId, mode]);
