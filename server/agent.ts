@@ -251,6 +251,11 @@ export function startAgent(
       busy = false;
       abortRequested = false;
       const seconds = Math.round(AGENT_IDLE_TIMEOUT_MS / 1000);
+      console.warn("[agent] visible-activity timeout", {
+        projectId: session.projectId,
+        seconds,
+        turnSeq: seq,
+      });
       emit({
         type: "agent:error",
         message:
@@ -335,7 +340,6 @@ export function startAgent(
   (async () => {
     try {
       for await (const msg of stream) {
-        if (busy) armIdleTimer(turnSeq);
         if (msg.type === "result") {
           const turnCost = msg.total_cost_usd ?? 0;
           cumulativeCost += turnCost;
@@ -425,8 +429,10 @@ export function startAgent(
             emit({ type: "agent:turn_aborted" });
             abortRequested = false;
           }
+          clearIdleTimer();
         } else {
-          routeSdkMessage(msg, emit);
+          const visibleActivity = routeSdkMessage(msg, emit);
+          if (busy && visibleActivity) armIdleTimer(turnSeq);
         }
       }
     } catch (err: any) {
@@ -500,7 +506,7 @@ export function startAgent(
   };
 }
 
-function routeSdkMessage(msg: any, emit: AgentEventSink) {
+function routeSdkMessage(msg: any, emit: AgentEventSink): boolean {
   // Streaming partial-message events. With `includePartialMessages: true` the
   // SDK forwards Anthropic's raw content_block_delta stream events. We forward
   // text deltas to the client as `agent:text_chunk` so the chat can render
@@ -519,16 +525,19 @@ function routeSdkMessage(msg: any, emit: AgentEventSink) {
         messageUuid: String(msg.uuid ?? ""),
         delta: ev.delta.text,
       });
+      return true;
     }
-    return;
+    return false;
   }
 
   if (msg.type === "assistant") {
     const messageUuid: string | undefined = msg.uuid;
     const blocks = msg.message?.content ?? [];
+    let emitted = false;
     for (const block of blocks) {
       if (block.type === "text") {
         emit({ type: "agent:text", text: block.text, messageUuid });
+        emitted = true;
       } else if (block.type === "tool_use") {
         emit({
           type: "agent:tool_use",
@@ -536,13 +545,15 @@ function routeSdkMessage(msg: any, emit: AgentEventSink) {
           tool: block.name,
           input: block.input,
         });
+        emitted = true;
       }
     }
-    return;
+    return emitted;
   }
 
   if (msg.type === "user") {
     const blocks = msg.message?.content ?? [];
+    let emitted = false;
     for (const block of blocks) {
       if (block.type === "tool_result") {
         const content =
@@ -557,12 +568,14 @@ function routeSdkMessage(msg: any, emit: AgentEventSink) {
           ok: !block.is_error,
           preview: content.length > 600 ? content.slice(0, 600) + "…" : content,
         });
+        emitted = true;
       }
     }
-    return;
+    return emitted;
   }
 
   // result is handled inline in the pump loop so we can update cumulative cost.
+  return false;
 }
 
 /**

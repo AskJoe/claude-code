@@ -64,6 +64,14 @@ await assertOk(
   agentSource.includes("advisorModel: advisorModelId"),
   "server/agent.ts should pass advisorModel through SDK settings"
 );
+await assertOk(
+  agentSource.includes("const visibleActivity = routeSdkMessage(msg, emit);"),
+  "server/agent.ts should base the stall watchdog on visible SDK activity"
+);
+await assertOk(
+  agentSource.includes("[agent] visible-activity timeout"),
+  "server/agent.ts should log visible-activity watchdog timeouts for Render debugging"
+);
 
 const pkg = JSON.parse(await read("package.json")) as {
   dependencies?: Record<string, string>;
