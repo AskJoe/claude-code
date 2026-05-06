@@ -10,7 +10,14 @@
  * the session is reset.
  */
 
-import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type Options,
+} from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod/v4";
 import { getSettings } from "./settings.ts";
 import { getUserById } from "./db.ts";
 import type { Session } from "./sessions.ts";
@@ -21,13 +28,10 @@ import type {
 } from "../shared/events.ts";
 
 // Advisor strategy — see https://claude.com/blog/the-advisor-strategy
-// Beta header centralized here; bump when the API moves out of beta.
-const ADVISOR_BETA_HEADER = "advisor-tool-2026-03-01";
-
-// Advisor remains behind an explicit production opt-in because it depends on
-// Anthropic's server-side advisor tool. The SDK exposes advisorModel through
-// `settings`; the beta flag still travels through CLI passthrough because the
-// SDK's typed `betas` union does not include this advisor beta yet.
+// Keep advisor behind an explicit production opt-in. We intentionally do NOT
+// use the server-side advisor beta here: in this SDK/runtime path it can end
+// with stop_reason=tool_use and no tool result. Instead, we expose an
+// in-process MCP tool that the SDK can fulfill deterministically.
 const ADVISOR_RUNTIME_ENABLED =
   process.env.LAB_ADVISOR_ENABLED === "1" ||
   process.env.LAB_ADVISOR_ENABLED === "true";
@@ -74,7 +78,7 @@ function estimateCost(modelId: string, inputTokens: number, outputTokens: number
   );
 }
 
-const ADVISOR_TIMING_BLOCK = `You have access to an \`advisor\` tool backed by a stronger reviewer model. It takes NO parameters — when you call advisor(), your entire conversation history is automatically forwarded. They see the task, every tool call you've made, every result you've seen.
+const ADVISOR_TIMING_BLOCK = `You have access to an advisor tool backed by a stronger reviewer model. Call \`mcp__cloudwise_advisor__advisor\` with a concise but complete context summary and the specific question you need reviewed. Include the user's goal, relevant findings, files/tools touched, current uncertainty, and the action you plan to take next.
 
 Call advisor BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption. If the task requires orientation first (finding files, fetching a source, seeing what's there), do that, then call advisor. Orientation is not substantive work. Writing, editing, and declaring an answer are.
 
@@ -90,6 +94,21 @@ const ADVISOR_TREATMENT_BLOCK = `Give the advice serious weight. If you follow a
 If you've already retrieved data pointing one way and the advisor points another: don't silently switch. Surface the conflict in one more advisor call — "I found X, you suggest Y, which constraint breaks the tie?" The advisor saw your evidence but may have underweighted it; a reconcile call is cheaper than committing to the wrong branch.`;
 
 const ADVISOR_CONCISENESS_BLOCK = `The advisor should respond in under 100 words and use enumerated steps, not explanations.`;
+
+const ADVISOR_TOOL_SCHEMA = {
+  context: z
+    .string()
+    .min(1)
+    .describe("Concise summary of the task, evidence gathered, current plan, and uncertainty."),
+  question: z
+    .string()
+    .min(1)
+    .describe("The specific decision, risk, or next step the advisor should review."),
+};
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
 const SYSTEM_PROMPT = `You are the agent powering Cloudwise Lab — a web playground where Cloudwise Academy students chat with a Claude-Code-style assistant.
 
@@ -182,12 +201,58 @@ export type StartAgentOptions = {
   /** Executor model. Defaults to lab-wide `default_model` setting. */
   executor?: ExecutorModel;
   /** Optional advisor (Opus 4.7) — null means no advisor.
-   * When set, the SDK is told to register the advisor tool via the
-   * `advisor-tool-2026-03-01` beta header + `advisorModel` setting. The
+   * When set, the SDK is told to register the local cloudwise_advisor MCP tool. The
    * recommended timing/treatment/conciseness blocks are prepended to the
    * system prompt to guide when the executor invokes the tool. */
   advisor?: AdvisorModel;
 };
+
+function createAdvisorServer(advisorModelId: string) {
+  return createSdkMcpServer({
+    name: "cloudwise_advisor",
+    version: "1.0.0",
+    alwaysLoad: true,
+    tools: [
+      tool(
+        "advisor",
+        "Ask a stronger advisor model for concise strategic review before important work.",
+        ADVISOR_TOOL_SCHEMA,
+        async ({ context, question }) => {
+          const response = await anthropic.messages.create({
+            model: advisorModelId,
+            max_tokens: 350,
+            system:
+              "You are a concise senior engineering advisor. Return under 100 words. " +
+              "Use numbered steps. Focus on risks, missing checks, and the next best action. " +
+              "Do not restate the whole context.",
+            messages: [
+              {
+                role: "user",
+                content:
+                  `Context:\n${context}\n\n` +
+                  `Question:\n${question}\n\n` +
+                  `Give concise advice now.`,
+              },
+            ],
+          });
+          const text = response.content
+            .map((block) => (block.type === "text" ? block.text : ""))
+            .join("")
+            .trim();
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: text || "No advisor guidance returned.",
+              },
+            ],
+          };
+        },
+        { alwaysLoad: true }
+      ),
+    ],
+  });
+}
 
 export function startAgent(
   session: Session,
@@ -306,25 +371,18 @@ export function startAgent(
     thinking: { type: "adaptive" },
   };
 
-  // When advisor is on, pass advisorModel through the SDK's first-class
-  // settings channel. Passing settings through extraArgs was fragile: the
-  // current SDK already serializes `options.settings` into the CLI's
-  // --settings flag, and duplicate/manual settings are a plausible cause of
-  // unresolved server_tool_use advisor failures.
+  // When advisor is on, expose our own SDK MCP tool. This avoids the built-in
+  // server-side advisor beta path that has produced unresolved tool-use stops.
   if (advisorActive && advisorModelId) {
-    options.settings = {
-      ...(typeof options.settings === "object" ? options.settings : {}),
-      advisorModel: advisorModelId,
+    options.mcpServers = {
+      ...(options.mcpServers ?? {}),
+      cloudwise_advisor: createAdvisorServer(advisorModelId),
     };
-    options.extraArgs = {
-      ...(options.extraArgs ?? {}),
-      betas: ADVISOR_BETA_HEADER,
-    };
-    console.info("[agent] advisor runtime configured", {
+    console.info("[agent] local advisor tool configured", {
       executorModelId,
       advisorModelId,
-      advisorBeta: ADVISOR_BETA_HEADER,
-      settingsAdvisorModel: true,
+      mcpServer: "cloudwise_advisor",
+      tool: "advisor",
     });
   }
 

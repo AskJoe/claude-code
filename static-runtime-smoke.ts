@@ -56,13 +56,19 @@ await assertNoText("server/agent.ts", [
   "npm run dev",
   "src/pages",
   "settings: inlineSettings",
+  "ADVISOR_BETA_HEADER",
+  "advisor-tool-2026-03-01",
 ]);
 await assertNoText("render.yaml", ["LAB_RUNTIME", "E2B_API_KEY"]);
 
 const agentSource = await read("server/agent.ts");
 await assertOk(
-  agentSource.includes("advisorModel: advisorModelId"),
-  "server/agent.ts should pass advisorModel through SDK settings"
+  agentSource.includes("createSdkMcpServer"),
+  "server/agent.ts should expose advisor as an in-process SDK MCP tool"
+);
+await assertOk(
+  agentSource.includes("cloudwise_advisor: createAdvisorServer(advisorModelId)"),
+  "server/agent.ts should register the local advisor MCP server when advisor is active"
 );
 await assertOk(
   agentSource.includes("const visibleActivity = routeSdkMessage(msg, emit);"),
