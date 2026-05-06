@@ -163,8 +163,16 @@ export function startAutoBuilder(input: {
     if (!(await fileExists(packageJson))) {
       throw new Error(`project package.json missing at ${packageJson}`);
     }
-    const astroBin = join(input.projectDir, "node_modules", ".bin", "astro");
-    if (await fileExists(astroBin)) return;
+    const requiredInstalledFiles = [
+      join(input.projectDir, "node_modules", ".bin", "astro"),
+      join(input.projectDir, "node_modules", "astro", "package.json"),
+      join(input.projectDir, "node_modules", "unifont", "package.json"),
+    ];
+    const hasRequiredInstall = (
+      await Promise.all(requiredInstalledFiles.map((path) => fileExists(path)))
+    ).every(Boolean);
+    if (hasRequiredInstall) return;
+
     const result = await runLoggedCommand("npm", ["install"], INSTALL_TIMEOUT_MS);
     if (result.code !== 0) {
       const reason = result.timedOut
