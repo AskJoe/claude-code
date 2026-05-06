@@ -139,6 +139,8 @@ export function startAgent(
   let abortRequested = false;
   let idleTimer: NodeJS.Timeout | null = null;
   let turnSeq = 0;
+  let lastSdkActivityAt = 0;
+  let lastSdkActivityType = "none";
   // One-shot prior-conversation context, set by the WS handler on
   // session open from `listMessages(...)`. Consumed on the next
   // `send()` so the model gets a single fat first message containing
@@ -180,10 +182,13 @@ export function startAgent(
       busy = false;
       abortRequested = false;
       const seconds = Math.round(AGENT_IDLE_TIMEOUT_MS / 1000);
-      console.warn("[agent] visible-activity timeout", {
+      const idleMs = lastSdkActivityAt > 0 ? Date.now() - lastSdkActivityAt : null;
+      console.warn("[agent] sdk-activity timeout", {
         projectId: session.projectId,
         seconds,
         turnSeq: seq,
+        lastSdkActivityType,
+        idleMs,
       });
       emit({
         type: "agent:error",
@@ -220,9 +225,10 @@ export function startAgent(
     // Stream text chunks as they arrive so the chat shows live token-by-token
     // output instead of a long "thinking…" pause followed by a wall of text.
     includePartialMessages: true,
-    // Adaptive extended thinking: on supported models (Opus 4.7), Claude
-    // decides per-turn whether deeper reasoning is worth the tokens.
-    thinking: { type: "adaptive" },
+    // This is an interactive student lab. Extended hidden reasoning can leave
+    // the UI looking stuck for minutes, so keep turns responsive by default.
+    thinking: { type: "disabled" },
+    effort: "low",
   };
 
   const stream = query({ prompt: inbox.iterable, options });
@@ -231,6 +237,12 @@ export function startAgent(
   (async () => {
     try {
       for await (const msg of stream) {
+        lastSdkActivityAt = Date.now();
+        lastSdkActivityType =
+          msg.type === "stream_event"
+            ? String(msg.event?.type ?? "stream_event")
+            : String(msg.type);
+        if (busy) armIdleTimer(turnSeq);
         if (msg.type === "result") {
           const turnCost = msg.total_cost_usd ?? 0;
           cumulativeCost += turnCost;
@@ -260,8 +272,7 @@ export function startAgent(
           }
           clearIdleTimer();
         } else {
-          const visibleActivity = routeSdkMessage(msg, emit);
-          if (busy && visibleActivity) armIdleTimer(turnSeq);
+          routeSdkMessage(msg, emit);
         }
       }
     } catch (err: any) {
@@ -291,6 +302,8 @@ export function startAgent(
       if (exhausted) return;
       busy = true;
       turnSeq += 1;
+      lastSdkActivityAt = Date.now();
+      lastSdkActivityType = "user_message_queued";
       emit({ type: "agent:turn_start" });
       armIdleTimer(turnSeq);
       let payload = text;

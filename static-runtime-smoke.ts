@@ -80,12 +80,16 @@ await assertNoText("README.md", ["advisor", "Advisor", "ADVISOR"]);
 
 const agentSource = await read("server/agent.ts");
 await assertOk(
-  agentSource.includes("const visibleActivity = routeSdkMessage(msg, emit);"),
-  "server/agent.ts should base the stall watchdog on visible SDK activity"
+  agentSource.includes("lastSdkActivityAt = Date.now();"),
+  "server/agent.ts should base the stall watchdog on SDK activity"
 );
 await assertOk(
-  agentSource.includes("[agent] visible-activity timeout"),
-  "server/agent.ts should log visible-activity watchdog timeouts for Render debugging"
+  agentSource.includes("[agent] sdk-activity timeout"),
+  "server/agent.ts should log SDK-activity watchdog timeouts for Render debugging"
+);
+await assertOk(
+  agentSource.includes('thinking: { type: "disabled" }'),
+  "server/agent.ts should disable extended thinking for interactive latency"
 );
 
 const pkg = JSON.parse(await read("package.json")) as {
