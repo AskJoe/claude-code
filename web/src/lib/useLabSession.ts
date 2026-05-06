@@ -539,6 +539,11 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
     }
 
     case "agent:error": {
+      s.setChat((c) =>
+        c.map((it) =>
+          it.kind === "agent-text" && it.streaming ? { ...it, streaming: false } : it
+        )
+      );
       // The Claude Agent SDK's CLI binary throws this format when the model's
       // last turn ended with stop_reason=tool_use but the binary could not
       // fulfill the tool call. Show a concise runtime failure without blaming
@@ -554,7 +559,7 @@ function handleServerEvent(event: ServerEvent, s: Setters) {
             text:
               "The agent runtime stopped on an unresolved tool call. The server has advisor mode enabled, " +
               "so this is a runtime/SDK failure rather than a missing advisor environment variable. " +
-              "Click Reset and try again; if it repeats, use the Render log line from this turn to debug the runtime.",
+              "Click Reset to start a fresh agent session.",
           },
         ]);
       } else {

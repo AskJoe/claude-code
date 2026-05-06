@@ -36,6 +36,11 @@ const ADVISOR_RUNTIME_ENABLED =
   process.env.LAB_ADVISOR_ENABLED === "1" ||
   process.env.LAB_ADVISOR_ENABLED === "true";
 
+const AGENT_IDLE_TIMEOUT_MS = Math.max(
+  30_000,
+  Number(process.env.LAB_AGENT_IDLE_TIMEOUT_MS ?? 120_000)
+);
+
 // Map our preset's executor key to the SDK / Anthropic model id.
 function resolveExecutorModelId(e: ExecutorModel): string {
   switch (e) {
@@ -201,6 +206,8 @@ export function startAgent(
   let cumulativeAdvisorCost = 0;
   let advisorCallCount = 0;
   let abortRequested = false;
+  let idleTimer: NodeJS.Timeout | null = null;
+  let turnSeq = 0;
   // One-shot prior-conversation context, set by the WS handler on
   // session open from `listMessages(...)`. Consumed on the next
   // `send()` so the model gets a single fat first message containing
@@ -234,6 +241,33 @@ export function startAgent(
   // server logs instead of spamming the student's chat.
   const advisorRequested = advisorModelId !== null;
   const advisorActive = advisorRequested && ADVISOR_RUNTIME_ENABLED;
+
+  const clearIdleTimer = () => {
+    if (!idleTimer) return;
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  };
+
+  const armIdleTimer = (seq: number) => {
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      if (!busy || seq !== turnSeq) return;
+      busy = false;
+      abortRequested = false;
+      const seconds = Math.round(AGENT_IDLE_TIMEOUT_MS / 1000);
+      emit({
+        type: "agent:error",
+        message:
+          `Agent runtime timed out after ${seconds}s without activity. ` +
+          `This usually means the advisor/tool runtime stalled. Click Reset to start a fresh agent session.`,
+      });
+      try {
+        void (stream as any).interrupt?.();
+      } catch (err) {
+        console.error("[agent] timeout interrupt failed:", err);
+      }
+    }, AGENT_IDLE_TIMEOUT_MS);
+  };
 
   // Prepend the recommended advisor blocks when advisor is enabled. Order:
   // conciseness → timing → treatment → user prefix (already in composedSystemPrompt) → baked.
@@ -298,6 +332,7 @@ export function startAgent(
   (async () => {
     try {
       for await (const msg of stream) {
+        if (busy) armIdleTimer(turnSeq);
         if (msg.type === "result") {
           const turnCost = msg.total_cost_usd ?? 0;
           cumulativeCost += turnCost;
@@ -374,6 +409,7 @@ export function startAgent(
               : undefined,
           });
           busy = false;
+          clearIdleTimer();
           if (msg.subtype === "error_max_budget_usd") {
             exhausted = true;
             emit({
@@ -391,8 +427,19 @@ export function startAgent(
         }
       }
     } catch (err: any) {
+      clearIdleTimer();
       busy = false;
       emit({ type: "agent:error", message: err?.message ?? String(err) });
+    } finally {
+      clearIdleTimer();
+      if (busy) {
+        busy = false;
+        emit({
+          type: "agent:error",
+          message:
+            "Agent runtime closed before the current turn completed. Click Reset to start a fresh agent session.",
+        });
+      }
     }
   })();
 
@@ -405,7 +452,9 @@ export function startAgent(
     async send(text) {
       if (exhausted) return;
       busy = true;
+      turnSeq += 1;
       emit({ type: "agent:turn_start" });
+      armIdleTimer(turnSeq);
       let payload = text;
       if (pendingHistoryPreamble) {
         payload =
@@ -430,6 +479,7 @@ export function startAgent(
     async abort() {
       if (!busy) return;
       abortRequested = true;
+      clearIdleTimer();
       try {
         await (stream as any).interrupt?.();
       } catch (err) {
@@ -438,6 +488,7 @@ export function startAgent(
     },
 
     async dispose() {
+      clearIdleTimer();
       inbox.close();
       try {
         await (stream as any).interrupt?.();
